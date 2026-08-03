@@ -48,6 +48,7 @@
 #include <cstring>
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <unordered_set>
 
@@ -1011,25 +1012,67 @@ char** do_top(bool                                  bVerbose,
     return title;
 }
 
+/*! \brief Bookkeeping of the force-field terms dropped by generate_qmexcl_moltype().
+ *
+ * Counted per interaction function type, and split by how the atoms of the term
+ * are distributed over the two regions, so that the effect of the chosen scheme
+ * on the QM/MM boundary can be read off the grompp output.
+ */
+struct QmmmRemovedInteractions
+{
+    //! Terms all of whose atoms are QM -- described by the QM calculation itself.
+    std::array<int, F_NRE> allQm = {};
+    //! Terms with atoms in both regions -- these are the QM/MM boundary terms.
+    std::array<int, F_NRE> boundary = {};
+    //! Terms without a single QM atom (only single-atom terms can end up here).
+    std::array<int, F_NRE> mmOnly = {};
+};
+
 /*! \brief
  * Exclude molecular interactions for QM atoms in QM/MM
  *
  * Update the exclusion lists to include all QM atoms of this molecule,
  * replace bonds between QM atoms with CONNBOND and
  * set charges of QM atoms to 0.
- * When MiMiC is not used, remove bonded interactions between QM and link atoms.
+ * With the classic scheme, also remove the interactions between the QM atoms
+ * and the link atoms.
+ *
+ * The bonded interactions that involve both QM and MM atoms are treated
+ * according to one of two conventions, selected with \p qmmmMode:
+ *
+ * GMX_QMMM_ORIGINAL ("classic", the default and the historical GROMACS
+ *   behaviour): a bonded interaction is removed as soon as all but one of its
+ *   atoms are QM (i.e. a QM-QM-MM angle and a QM-QM-QM-MM dihedral are removed),
+ *   because the QM calculation with the link atom is assumed to describe it
+ *   already, and keeping the force-field term would count it twice.
+ *   In addition, the nonbonded and 1-4 interactions of the QM atoms with the
+ *   link atoms (MM atoms covalently bound to a QM atom) are excluded.
+ *
+ * GMX_QMMM_AMBER ("amber"): only those interactions are removed whose atoms are
+ *   all QM; every term with at least one MM atom is kept at the force-field
+ *   level, as in the QM/MM implementation of AMBER. The reasoning is that the
+ *   link atom is not the MM atom -- it differs in position and in mass -- so its
+ *   contribution is not equivalent to the force-field term, and the conformational
+ *   behaviour of the boundary is better described by keeping the latter.
+ *   Consistently with that, no exclusions involving link atoms are generated.
+ *
+ * GMX_QMMM_MIMIC uses the same rule for the bonded interactions as
+ *   GMX_QMMM_AMBER, because MiMiC treats the link atoms as quantum atoms.
  *
  * \param[in,out] molt molecule type with QM atoms
  * \param[in] grpnr group informatio
  * \param[in,out] ir input record
- * \param[in,out] qmmmMode QM/MM mode switch: original/MiMiC
+ * \param[in,out] qmmmMode QM/MM mode switch: original(classic)/MiMiC/amber
  * \param[in] logger Handle to logging interface.
+ * \param[in,out] removed Counters of the removed interactions, accumulated over
+ *                        all of the molecule types that contain QM atoms.
  */
-static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
-                                    const unsigned char* grpnr,
-                                    t_inputrec*          ir,
-                                    GmxQmmmMode          qmmmMode,
-                                    const gmx::MDLogger& logger)
+static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
+                                    const unsigned char*    grpnr,
+                                    t_inputrec*             ir,
+                                    GmxQmmmMode             qmmmMode,
+                                    const gmx::MDLogger&    logger,
+                                    QmmmRemovedInteractions* removed)
 {
     /* This routine expects molt->ilist to be of size F_NRE and ordered. */
 
@@ -1125,6 +1168,18 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
         {
             bool bexcl;
 
+            /* How many of the atoms of this interaction are QM? Only needed for
+             * the bookkeeping below, and for the multi-atom interactions.
+             */
+            int numQmAtoms = 0;
+            for (int jj = j + 1; jj < j + 1 + nratoms; jj++)
+            {
+                if (bQMMM[molt->ilist[ftype].iatoms[jj]])
+                {
+                    numQmAtoms++;
+                }
+            }
+
             if (nratoms == 2)
             {
                 /* Remove an interaction between two atoms when both are
@@ -1155,18 +1210,17 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
                  * as the interaction is included in the QM via:
                  * QMatom1-QMatom2-QMatom-3-Linkatom.
                  */
-                int numQmAtoms = 0;
-                for (int jj = j + 1; jj < j + 1 + nratoms; jj++)
-                {
-                    if (bQMMM[molt->ilist[ftype].iatoms[jj]])
-                    {
-                        numQmAtoms++;
-                    }
-                }
 
                 /* MiMiC treats link atoms as quantum atoms - therefore
-                 * we do not need do additional exclusions here */
-                if (qmmmMode == GmxQmmmMode::GMX_QMMM_MIMIC)
+                 * we do not need do additional exclusions here.
+                 * The "amber" scheme uses the same rule for a different reason:
+                 * an interaction is only removed if it is described by the QM
+                 * calculation completely, i.e. if all of its atoms are QM.
+                 * Note that this also concerns the interactions of a single atom
+                 * (position restraints), which are removed unconditionally by the
+                 * classic scheme, but only for the QM atoms by the amber scheme.
+                 */
+                if (qmmmMode == GmxQmmmMode::GMX_QMMM_MIMIC || qmmmMode == GmxQmmmMode::GMX_QMMM_AMBER)
                 {
                     bexcl = numQmAtoms == nratoms;
                 }
@@ -1184,6 +1238,19 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
             }
             if (bexcl)
             {
+                /* keep track of what is being removed, for the report at the end */
+                if (numQmAtoms == nratoms)
+                {
+                    removed->allQm[ftype]++;
+                }
+                else if (numQmAtoms > 0)
+                {
+                    removed->boundary[ftype]++;
+                }
+                else
+                {
+                    removed->mmOnly[ftype]++;
+                }
                 /* since the interaction involves QM atoms, these should be
                  * removed from the MM ilist
                  */
@@ -1204,9 +1271,16 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
      * to exclude their nonbonded interactions with the QM atoms. The
      * reason for this is that this interaction is accounted for in the
      * linkatoms interaction with the QMatoms and would be counted
-     * twice.  */
+     * twice.
+     * This is only done with the classic scheme. The amber scheme keeps the
+     * interactions of the link atoms with the QM atoms at the force-field level
+     * (the ones within the exclusion range of the force field are excluded by
+     * the exclusions generated by grompp anyway), and MiMiC does not need it
+     * because it treats the link atoms as quantum atoms.
+     * If no link atoms are collected here, blink[] remains false everywhere,
+     * which keeps the exclusions and the 1-4 pairs below untouched. */
 
-    if (qmmmMode != GmxQmmmMode::GMX_QMMM_MIMIC)
+    if (qmmmMode == GmxQmmmMode::GMX_QMMM_ORIGINAL)
     {
         for (int i = 0; i < F_NRE; i++)
         {
@@ -1244,7 +1318,7 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
         blink[i] = FALSE;
     }
 
-    if (qmmmMode != GmxQmmmMode::GMX_QMMM_MIMIC)
+    if (qmmmMode == GmxQmmmMode::GMX_QMMM_ORIGINAL)
     {
         for (int i = 0; i < link_nr; i++)
         {
@@ -1297,7 +1371,9 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
      * classical atom bonded to the boundary QM atoms with the QMatoms,
      * as this interaction is already accounted for by the QM, so also
      * here we run the risk of double counting! We proceed in a similar
-     * way as we did above for the other bonded interactions: */
+     * way as we did above for the other bonded interactions:
+     * (with the amber scheme and with MiMiC, blink[] is false everywhere,
+     *  so only the pairs between two QM atoms are removed here) */
     for (int i = F_LJ14; i < F_COUL14; i++)
     {
         int nratoms = interaction_function[i].nratoms;
@@ -1310,6 +1386,17 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
                     ((bQMMM[a1] && bQMMM[a2]) || (blink[a1] && bQMMM[a2]) || (bQMMM[a1] && blink[a2]));
             if (bexcl)
             {
+                /* keep track of what is being removed, for the report at the end:
+                 * a pair of two QM atoms, or a QM atom with a link atom (boundary)
+                 */
+                if (bQMMM[a1] && bQMMM[a2])
+                {
+                    removed->allQm[i]++;
+                }
+                else
+                {
+                    removed->boundary[i]++;
+                }
                 /* since the interaction involves QM atoms, these should be
                  * removed from the MM ilist
                  */
@@ -1333,6 +1420,85 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
     free(blink);
 } /* generate_qmexcl */
 
+/*! \brief Report the force-field terms that were removed around the QM region.
+ *
+ * The interesting column is the middle one: those are the terms that connect the
+ * two regions, and they are the ones whose treatment differs between the classic
+ * and the amber scheme. The terms with only QM atoms are removed by either
+ * scheme, because the QM calculation describes them.
+ */
+static void reportQmmmRemovedInteractions(const QmmmRemovedInteractions& removed,
+                                          GmxQmmmMode                    qmmmMode,
+                                          const gmx::MDLogger&           logger)
+{
+    const char* schemeName = "classic";
+    if (qmmmMode == GmxQmmmMode::GMX_QMMM_MIMIC)
+    {
+        schemeName = "MiMiC";
+    }
+    else if (qmmmMode == GmxQmmmMode::GMX_QMMM_AMBER)
+    {
+        schemeName = "amber";
+    }
+
+    int totalAllQm = 0, totalBoundary = 0, totalMmOnly = 0;
+    for (int ftype = 0; ftype < F_NRE; ftype++)
+    {
+        totalAllQm += removed.allQm[ftype];
+        totalBoundary += removed.boundary[ftype];
+        totalMmOnly += removed.mmOnly[ftype];
+    }
+
+    GMX_LOG(logger.info)
+            .appendTextFormatted(
+                    "\nQM/MM: force-field terms removed with the '%s' scheme, by interaction type:",
+                    schemeName);
+    if (totalAllQm + totalBoundary + totalMmOnly == 0)
+    {
+        GMX_LOG(logger.info).appendTextFormatted("  (none)\n");
+        return;
+    }
+    GMX_LOG(logger.info)
+            .appendTextFormatted("  %-22s %10s %10s %10s", "interaction", "all-QM", "QM--MM", "MM-only");
+    for (int ftype = 0; ftype < F_NRE; ftype++)
+    {
+        if (removed.allQm[ftype] + removed.boundary[ftype] + removed.mmOnly[ftype] == 0)
+        {
+            continue;
+        }
+        GMX_LOG(logger.info)
+                .appendTextFormatted("  %-22s %10d %10d %10d", interaction_function[ftype].longname,
+                                     removed.allQm[ftype], removed.boundary[ftype], removed.mmOnly[ftype]);
+    }
+    GMX_LOG(logger.info)
+            .appendTextFormatted("  %-22s %10d %10d %10d", "total", totalAllQm, totalBoundary, totalMmOnly);
+    GMX_LOG(logger.info)
+            .appendTextFormatted(
+                    "  all-QM  = every atom of the term is QM: described by the QM calculation\n"
+                    "  QM--MM  = the term spans the QM/MM boundary\n"
+                    "  MM-only = no QM atom in the term at all");
+    if (totalBoundary == 0)
+    {
+        GMX_LOG(logger.info)
+                .appendTextFormatted(
+                        "No term spanning the boundary was removed: every force-field term with at "
+                        "least one MM atom is kept.\n");
+    }
+    else
+    {
+        GMX_LOG(logger.info)
+                .appendTextFormatted(
+                        "The QM--MM terms above are assumed to be described by the QM calculation "
+                        "with the link atom;\nswitch the scheme with GMX_QMMM_BONDED_SCHEME to keep "
+                        "them at the force-field level.\n");
+    }
+    GMX_LOG(logger.info)
+            .appendTextFormatted(
+                    "Note: chemical bonds between two QM atoms are not lost but converted to "
+                    "connections (F_CONNBONDS),\nand the removed pair interactions (LJ-14) are "
+                    "listed here as well.\n");
+}
+
 void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode qmmmMode, const gmx::MDLogger& logger)
 {
     /* This routine expects molt->molt[m].ilist to be of size F_NRE and ordered.
@@ -1344,6 +1510,9 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
     bool            bQMMM;
     int             index_offset = 0;
     int             qm_nr        = 0;
+    // Counters of the removed force-field terms, summed over the molecule types
+    //   that contain QM atoms, reported at the end of this routine.
+    QmmmRemovedInteractions removed;
 
     grpnr = sys->groups.groupNumbers[SimulationAtomGroupType::QuantumMechanics].data();
 
@@ -1410,7 +1579,7 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
                     /* Set the molecule type for the QMMM molblock */
                     molb->type = sys->moltype.size() - 1;
                 }
-                generate_qmexcl_moltype(&sys->moltype[molb->type], grpnr, ir, qmmmMode, logger);
+                generate_qmexcl_moltype(&sys->moltype[molb->type], grpnr, ir, qmmmMode, logger, &removed);
             }
             if (grpnr)
             {
@@ -1419,7 +1588,11 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
             index_offset += nat_mol;
         }
     }
-    if (qmmmMode == GmxQmmmMode::GMX_QMMM_ORIGINAL && nr_mol_with_qm_atoms > 1)
+    if (nr_mol_with_qm_atoms > 0)
+    {
+        reportQmmmRemovedInteractions(removed, qmmmMode, logger);
+    }
+    if (qmmmMode != GmxQmmmMode::GMX_QMMM_MIMIC && nr_mol_with_qm_atoms > 1)
     {
         /* generate a warning is there are QM atoms in different topologies.
          * In this case, it is not possible at this stage to mutualy exclude

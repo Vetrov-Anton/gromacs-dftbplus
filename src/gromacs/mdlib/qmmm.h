@@ -40,6 +40,7 @@
 
 #include "config.h"
 
+#include <utility>
 #include <vector>
 
 #include "gromacs/math/paddedvector.h"
@@ -259,6 +260,24 @@ public:
     std::vector<real>       MMcharges_full;
     std::vector<int>        shiftMM_full;
 
+    // Scaling of the QM--MM electrostatic interaction due to the topological
+    // (1-2, 1-3, 1-4) exclusions, see QMMM_rec::init_QMMM_exclusions().
+    // Both arrays are only filled when the exclusions are switched on.
+    // qmmmScale is indexed as [j * nrMMatoms + k] for QM atom j and
+    //   MM atom k of the short-range list (1);
+    // localIndexOfAtom maps a global atom number onto its position
+    //   in the short-range list (1), or -1 if it is not on that list.
+    std::vector<real> qmmmScale;
+    std::vector<int>  localIndexOfAtom;
+
+    //! Scaling factor of the electrostatic interaction of QM atom \p j
+    //  with MM atom \p k of the short-range list; 1 when exclusions are off.
+    real qmmmScaleFactor(int j, int k) const
+    {
+        return qmmmScale.empty() ? real(1.0)
+                                 : qmmmScale[static_cast<size_t>(j) * nrMMatoms + k];
+    }
+
     void init_MMrec(real       scalefactor_in,
                     int        nrMMatoms_full_in,
                     int        natoms,
@@ -277,6 +296,18 @@ public:
     std::vector<QMMM_PME>    pme;        // [0] == pme_full, [1] == pme_qmonly
     PbcType                  pbcType;
     struct gmx_pme_t* const* pmedata;
+
+    // Topological (1-2, 1-3, 1-4) exclusions of the QM--MM electrostatics.
+    // Highest excluded bonded neighbour order, as read from GMX_QMMM_NREXCL;
+    //   0 (default) reproduces the behaviour of the code without exclusions.
+    int  qmmmNrexcl = 0;
+    // Factor applied to the 1-4 QM--MM interaction when qmmmNrexcl == 3;
+    //   defaults to fudgeQQ of the force field.
+    real qmmmFudgeQQ = 1.0;
+    // For every QM atom, the list of (global MM atom index, scaling factor)
+    //   for those MM atoms that are within qmmmNrexcl bonds of it.
+    //   Built once at initialization; only a handful of entries per QM atom.
+    std::vector<std::vector<std::pair<int, real>>> mmScaleExc;
 
     QMMM_rec(const t_commrec*                 cr,
              const gmx_mtop_t*                mtop,
@@ -315,6 +346,15 @@ public:
                              const t_mdatoms*  md,
                              const matrix      box);
     
+    // Set up the topological exclusions of the QM--MM electrostatics.
+    // Called once, from the constructor.
+    void init_QMMM_exclusions(const gmx_mtop_t* mtop,
+                              const t_forcerec* fr);
+
+    // Fill mm[0].qmmmScale for the current short-range MM list.
+    // Called from update_QMMM_coord(), i.e. in every step.
+    void update_QMMM_exclusion_scaling(int natoms);
+
     void update_QMMM_coord(const t_commrec*  cr,
                            rvec*             shift_vec,
                            const rvec        x[],

@@ -42,6 +42,7 @@
 #include <cerrno>
 #include <climits>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
@@ -1663,6 +1664,63 @@ static void set_verlet_buffer(const gmx_mtop_t*    mtop,
     }
 }
 
+/*! \brief Select the treatment of the bonded interactions at the QM/MM boundary.
+ *
+ * Two conventions are in use for the force-field terms that involve both QM and
+ * MM atoms:
+ *   - "classic" (the default, and what GROMACS has always been doing):
+ *     a bonded interaction is removed as soon as all but one of its atoms are QM,
+ *     because the QM calculation with the link atom is assumed to describe it;
+ *   - "amber": only those interactions are removed whose atoms are all QM, so
+ *     that every term with at least one MM atom is retained at the force-field
+ *     level, following the QM/MM implementation of AMBER.
+ * The details are documented at generate_qmexcl_moltype() in topio.cpp.
+ *
+ * The scheme is chosen here, at preprocessing time, and the result is stored in
+ * the tpr file -- setting the environment variable for mdrun has no effect.
+ */
+static GmxQmmmMode getQmmmBondedScheme(warninp* wi, const gmx::MDLogger& logger)
+{
+    const char* env = getenv("GMX_QMMM_BONDED_SCHEME");
+
+    if (env == nullptr || gmx_strcasecmp(env, "classic") == 0)
+    {
+        GMX_LOG(logger.info)
+                .asParagraph()
+                .appendTextFormatted(
+                        "QM/MM: treating the bonded interactions at the QM/MM boundary with the "
+                        "'classic' scheme -- a bonded interaction is removed when all but one of "
+                        "its atoms are QM, and the nonbonded and 1-4 interactions of the QM atoms "
+                        "with the MM atoms bound to them are excluded. To change, set the "
+                        "environment variable GMX_QMMM_BONDED_SCHEME to 'amber'.");
+        return GmxQmmmMode::GMX_QMMM_ORIGINAL;
+    }
+
+    if (gmx_strcasecmp(env, "amber") == 0)
+    {
+        GMX_LOG(logger.info)
+                .asParagraph()
+                .appendTextFormatted(
+                        "QM/MM: treating the bonded interactions at the QM/MM boundary with the "
+                        "'amber' scheme -- only those bonded interactions are removed whose atoms "
+                        "are all QM, and no exclusions involving the MM atoms are generated.");
+        warning_note(wi,
+                     "\nThe environment variable GMX_QMMM_BONDED_SCHEME requests the 'amber' "
+                     "treatment of the QM/MM boundary. Every bonded interaction with at least one "
+                     "MM atom is kept at the force-field level, including the QM-QM-MM angles and "
+                     "the QM-QM-QM-MM dihedrals that the default 'classic' scheme removes. Make "
+                     "sure that this is what you want, in particular if the QM region is capped "
+                     "with link atoms -- their contribution is then counted on top of the "
+                     "force-field terms.\n");
+        return GmxQmmmMode::GMX_QMMM_AMBER;
+    }
+
+    gmx_fatal(FARGS,
+              "Unknown value '%s' of the environment variable GMX_QMMM_BONDED_SCHEME. "
+              "Use either 'classic' (the default) or 'amber'.",
+              env);
+}
+
 int gmx_grompp(int argc, char* argv[])
 {
     const char* desc[] = {
@@ -2230,7 +2288,7 @@ int gmx_grompp(int argc, char* argv[])
     /* make exclusions between QM atoms and remove charges if needed */
     if (ir->bQMMM)
     {
-        generate_qmexcl(&sys, ir, wi, GmxQmmmMode::GMX_QMMM_ORIGINAL, logger);
+        generate_qmexcl(&sys, ir, wi, getQmmmBondedScheme(wi, logger), logger);
         std::vector<int> qmmmAtoms = qmmmAtomIndices(*ir, sys);
         removeQmmmAtomCharges(&sys, qmmmAtoms);
     }

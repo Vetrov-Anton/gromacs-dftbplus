@@ -159,18 +159,23 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       int under_r1=0, under_rc=0;
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
+        // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
+        const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+        if (qMM == 0.) {
+          continue;
+        }
         real r = pbc_dist_qmmm(qm_.box, qm_.xQM[j], mm_.xMM[k]);
         if (r < 0.001) { // this may occur on the first step of simulation for link atom(s)
           printf("QM--MM exploding for QM=%d, MM=%d. MM charge is %f\n", j+1, k+1, mm_.MMcharges[k]);
           continue;
         }
         if (r < r_1) {
-          pot[j] += mm_.MMcharges[k] * (1. / r + big_c);
+          pot[j] += qMM * (1. / r + big_c);
           under_r1++;
           continue;
         }
         if (r < r_c) {
-          pot[j] += mm_.MMcharges[k] * ( 1. / r + big_a / 3. * CUB(r - r_1) + big_b / 4. * QRT(r - r_1) + big_c);
+          pot[j] += qMM * ( 1. / r + big_a / 3. * CUB(r - r_1) + big_b / 4. * QRT(r - r_1) + big_c);
           under_rc++;
           continue;
         }
@@ -188,13 +193,18 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       pot[j] = 0.;
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
+        // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
+        const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+        if (qMM == 0.) {
+          continue;
+        }
         real r = pbc_dist_qmmm(qm_.box, qm_.xQM[j], mm_.xMM[k]);
         if (r < 0.001) { // this may occur on the first step of simulation for link atom(s)
           printf("QM--MM exploding for QM=%d, MM=%d. MM charge is %f\n", j+1, k+1, mm_.MMcharges[k]);
           continue;
         }
         if (r < r_c) {
-          pot[j] += mm_.MMcharges[k] * ( 1. / r + SQR(r) / 2. / CUB(r_c) - big_c);
+          pot[j] += qMM * ( 1. / r + SQR(r) / 2. / CUB(r_c) - big_c);
           continue;
         }
       } // for k
@@ -211,13 +221,18 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       pot[j] = 0.;
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
+        // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
+        const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+        if (qMM == 0.) {
+          continue;
+        }
         real r = pbc_dist_qmmm(qm_.box, qm_.xQM[j], mm_.xMM[k]);
         if (r < 0.001) { // this may occur on the first step of simulation for link atom(s)
           printf("QM--MM exploding for QM=%d, MM=%d. MM charge is %f\n", j+1, k+1, mm_.MMcharges[k]);
           continue;
         }
         if (r < r_c) {
-          pot[j] += mm_.MMcharges[k] * ( 1. / r - SQR(r) / CUB(r_c) + big_c * r - big_k);
+          pot[j] += qMM * ( 1. / r - SQR(r) / CUB(r_c) + big_c * r - big_k);
           continue;
         }
       } // for k
@@ -232,11 +247,25 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       pot[j] = 0.;
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
+        /* With PME, a topologically excluded (or scaled) QM--MM pair needs two things:
+         *   - its real-space term erfc(beta*r)/r is scaled with s, as for the cut-off variants;
+         *   - the fraction (1-s) of its reciprocal-space term, which is computed on the grid
+         *     over the full MM list in calculate_LR_QM_MM() and cannot be scaled there,
+         *     is subtracted here as the pair term erf(beta*r)/r.
+         * The sum of the two reproduces s/r for the pair, as it should.
+         */
+        const real s = mm_.qmmmScaleFactor(j, k);
         real r = pbc_dist_qmmm(qm_.box, qm_.xQM[j], mm_.xMM[k]);
         if (r < 0.001) { // this may occur on the first step of simulation for link atom(s)
           printf("QM/MM PME QM--MM short range exploding for QM=%d, MM=%d. MM charge is %f\n", j+1, k+1, mm_.MMcharges[k]);
+          if (s != 1.) { // erf(beta*r)/r is regular at r -> 0, so the correction still applies
+            pot[j] -= (1. - s) * mm_.MMcharges[k] * M_2_SQRTPI * ewaldcoeff_q;
+          }
         } else {
-          pot[j] += mm_.MMcharges[k] / r * gmx_erfc(ewaldcoeff_q * r);
+          pot[j] += s * mm_.MMcharges[k] / r * gmx_erfc(ewaldcoeff_q * r);
+          if (s != 1.) {
+            pot[j] -= (1. - s) * mm_.MMcharges[k] / r * gmx_erf(ewaldcoeff_q * r);
+          }
         }
       } // for k
     } // for j
@@ -668,6 +697,12 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
       for (int j=0; j<n; j++) { // do it for every QM atom
         // add SR potential only from MM atoms in the neighbor list!
         for (int k=0; k<ne; k++) {
+          // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
+          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+          if (qMM == 0.)
+          {
+              continue;
+          }
           pbc_dx_qmmm(qm_.box, qm_.xQM[j], mm_.xMM[k], bond);
           real r = norm(bond);
           rvec dgr;
@@ -678,7 +713,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           }
           if (r < r_1)
           {
-              real fscal = - qm_.QMcharges[j] * mm_.MMcharges[k] / CUB(r) * SQR(BOHR2NM);
+              real fscal = - qm_.QMcharges[j] * qMM / CUB(r) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
               //printf("SR: QM %1d -- MM %1d:%12.7f%12.7f%12.7f\n", j+1, k+1, dgr[XX], dgr[YY], dgr[ZZ]);
               rvec_inc(partgrad[j], dgr);
@@ -687,7 +722,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           }
           if (r < r_c)
           {
-              real fscal = - qm_.QMcharges[j] * mm_.MMcharges[k] / r * (1. / SQR(r)
+              real fscal = - qm_.QMcharges[j] * qMM / r * (1. / SQR(r)
                            - big_a * SQR(r - r_1) - big_b * CUB(r - r_1)) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
               rvec_inc(partgrad[j], dgr);
@@ -706,6 +741,12 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
       for (int j=0; j<n; j++) { // do it for every QM atom
         // add SR potential only from MM atoms in the neighbor list!
         for (int k=0; k<ne; k++) {
+          // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
+          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+          if (qMM == 0.)
+          {
+              continue;
+          }
           pbc_dx_qmmm(qm_.box, qm_.xQM[j], mm_.xMM[k], bond);
           real r = norm(bond);
           rvec dgr;
@@ -716,7 +757,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           }
           if (r < r_c)
           {
-              real fscal = - qm_.QMcharges[j] * mm_.MMcharges[k] / r * (1. / SQR(r) - r / CUB(r_c)) * SQR(BOHR2NM);
+              real fscal = - qm_.QMcharges[j] * qMM / r * (1. / SQR(r) - r / CUB(r_c)) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
               rvec_inc(partgrad[j], dgr);
               rvec_dec(MMgrad[k], dgr);
@@ -735,6 +776,12 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
       for (int j=0; j<n; j++) { // do it for every QM atom
         // add SR potential only from MM atoms in the neighbor list!
         for (int k=0; k<ne; k++) {
+          // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
+          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+          if (qMM == 0.)
+          {
+              continue;
+          }
           pbc_dx_qmmm(qm_.box, qm_.xQM[j], mm_.xMM[k], bond);
           real r = norm(bond);
           rvec dgr;
@@ -745,7 +792,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           }
           if (r < r_c)
           {
-              real fscal = - qm_.QMcharges[j] * mm_.MMcharges[k] / r * (1. / SQR(r) + 2. * r / CUB(r_c) - big_c) * SQR(BOHR2NM);
+              real fscal = - qm_.QMcharges[j] * qMM / r * (1. / SQR(r) + 2. * r / CUB(r_c) - big_c) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
               rvec_inc(partgrad[j], dgr);
               rvec_dec(MMgrad[k], dgr);
@@ -1014,10 +1061,26 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
               printf("QM/MM PME QM--MM short range exploding for QM=%d, MM=%d. MM charge is %f\n", j+1, k+1, mm_.MMcharges[k]);
               continue;
           }
+          const real s = mm_.qmmmScaleFactor(j, k);
           if (r < rcoul)
           {
-              real fscal = qm_.QMcharges[j] * mm_.MMcharges[k] / SQR(r) *
+              real fscal = s * qm_.QMcharges[j] * mm_.MMcharges[k] / SQR(r) *
                            (- gmx_erfc(ewaldcoeff_q * r) / r
+                            - M_2_SQRTPI * ewaldcoeff_q * exp(-SQR(ewaldcoeff_q * r))) * SQR(BOHR2NM);
+              svmul(fscal, bond, dgr);
+              rvec_inc(grad_add[j], dgr);
+              rvec_dec(MMgrad[k], dgr);
+          }
+          if (s != 1.)
+          {
+              /* Counterpart of the reciprocal-space correction applied to the potential
+               * in calculate_SR_QM_MM(): remove the fraction (1-s) of the pair term
+               * erf(beta*r)/r, which the grid calculation has included in full.
+               * Not restricted to r < rcoul, because the reciprocal-space contribution
+               * is not either.
+               */
+              real fscal = (1. - s) * qm_.QMcharges[j] * mm_.MMcharges[k] / SQR(r) *
+                           (gmx_erf(ewaldcoeff_q * r) / r
                             - M_2_SQRTPI * ewaldcoeff_q * exp(-SQR(ewaldcoeff_q * r))) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
               rvec_inc(grad_add[j], dgr);

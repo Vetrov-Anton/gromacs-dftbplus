@@ -878,9 +878,15 @@ extern const char* gmx_nblist_interaction_names[GMX_NBLIST_INTERACTION_NR + 1];
 
 
 //! \brief QM/MM mode
+//
+// GMX_QMMM_ORIGINAL and GMX_QMMM_AMBER differ in the treatment of the bonded
+//   interactions that involve both QM and MM atoms, see generate_qmexcl_moltype()
+//   in gmxpreprocess/topio.cpp. The mode is selected in grompp with the
+//   environment variable GMX_QMMM_BONDED_SCHEME (classic -- the default -- or amber).
 enum struct GmxQmmmMode
 {
     GMX_QMMM_ORIGINAL,
-    GMX_QMMM_MIMIC
+    GMX_QMMM_MIMIC,
+    GMX_QMMM_AMBER
 };
 #endif /* GMX_MDTYPES_MD_ENUMS_H */
