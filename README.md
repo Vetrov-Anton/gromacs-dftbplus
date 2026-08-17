@@ -301,16 +301,13 @@ large stride. Each variable prints a confirmation line at startup.
 ## Typical run
 
 ```bash
-# preprocessing — the boundary scheme is decided here
-GMX_QMMM_BONDED_SCHEME=amber \
-  gmx grompp -f qm.mdp -c qm.gro -p qm.top -n qm.ndx -o qm.tpr
+gmx() {
+singularity run  --env GMX_QMMM_VARIANT=1 --env OMP_NUM_THREADS=1 --env GMX_QMMM_NREXCL=3   --nv -B /home/domain/data:/home/domain/data --pwd $(pwd) /home/domain/data/avetrov/build_dftb_gmx/new_gmx_dftb.sif /opt/gmx/bin/gmx $@
+}
 
-# simulation — electrostatics, exclusions and output files are decided here
-GMX_QMMM_VARIANT=1 \
-GMX_QMMM_NREXCL=3 \
-GMX_DFTB_CHARGES=10 \
-GMX_DFTB_ESP=10 \
-  gmx mdrun -deffnm qm
+gmx grompp -f qm.mdp -p qm.top -n qm.ndx -c qm.gro -o qw.tpr -r qm.gro -maxwarn 4
+
+gmx mdrun -deffnm qw -ntomp 1 -pin on -pinoffset 0 -v
 ```
 
 with an `.mdp` containing
