@@ -57,8 +57,7 @@ if you want `import QMMMtools` to work in a script or a notebook.
 
 A companion Python module, **[QMMMtools](https://github.com/Vetrov-Anton/QMMMtools)**, was
 developed for this build. It carves a QM region out of a finished classical GROMACS system
-and writes `qm.top`, `qm.gro`, `qm.ndx` and `dftb_in.hsd` — all four guaranteed to describe
-the same atoms in the same order, which is the failure mode hardest to notice afterwards.
+and writes `qm.top`, `qm.gro`, `qm.ndx` and `dftb_in.hsd`.
 It places hydrogen link atoms as two-body virtual sites, converts the QM–QM bonds to
 connections (`funct 5`), derives the integer QM charge from the force field and
 redistributes the remainder, and offers the boundary charge schemes
