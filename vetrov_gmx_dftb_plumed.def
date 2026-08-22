@@ -46,9 +46,10 @@ From: ubuntu:20.04
 #      expanding to the overloaded C++ template PLMD::Plumed::plumed_cmd_cxx,
 #      which has no address; the flag restores the plain C symbol.
 #
-# The QM/MM exclusion handling is Vetrov's and is deliberately untouched:
-# GMX_QMMM_NREXCL (0..3, DEFAULT 0 = no exclusions) and GMX_QMMM_FUDGEQQ are
-# read at run time.  Neither is set in %environment - see %help.
+# The QM/MM exclusion CODE is Vetrov's and is untouched: GMX_QMMM_NREXCL
+# (0..3) and GMX_QMMM_FUDGEQQ are read at run time.  The fork's own default is
+# 0 = no exclusions at all; this image overrides it to 3 in %environment, which
+# is the setting that matches the Alexander-the-Evil fork.  See %help.
 # ---------------------------------------------------------------------------
 
 %files
@@ -225,7 +226,10 @@ From: ubuntu:20.04
     # QM/MM electrostatics variant (0..4); 1 = full electrostatic QM/MM
     export GMX_QMMM_VARIANT=1
     export OMP_NUM_THREADS=1
-    # GMX_QMMM_NREXCL is deliberately NOT set here - see %help.
+    # Topological exclusions in the QM/MM electrostatics.  The fork defaults to
+    # 0 (none); 3 excludes 1-2/1-3 neighbours and scales 1-4 pairs by fudgeQQ.
+    # Override per run with --env GMX_QMMM_NREXCL=<0..3>.
+    export GMX_QMMM_NREXCL=3
 
 %runscript
     exec gmx "$@"
@@ -269,18 +273,25 @@ From: ubuntu:20.04
 
     QM/MM exclusions - READ THIS
     ----------------------------
-    This fork applies NO topological exclusions to the QM/MM electrostatics
-    unless you ask for them:
+    THIS IMAGE SETS GMX_QMMM_NREXCL=3 IN %environment.  That is NOT the fork's
+    own default - built from bare sources this code applies no topological
+    exclusions at all, and every MM atom within the cut-off polarizes the QM
+    density, bonded neighbours included.  The override is deliberate: 3 is the
+    setting that reproduces the Alexander-the-Evil fork, which applies
+    exclusions unconditionally.
 
-        GMX_QMMM_NREXCL=0   (default)  every MM atom within the cut-off
-                                       polarizes the QM density, bonded
-                                       neighbours included
+        GMX_QMMM_NREXCL=0              no exclusions (the fork's own default,
+                                       NOT this image's)
         GMX_QMMM_NREXCL=1|2|3          exclude up to 1-2 / 1-3 / 1-4 neighbours;
                                        1-4 pairs are scaled by fudgeQQ
         GMX_QMMM_FUDGEQQ=<x>           override the force field's fudgeQQ
 
-    GMX_QMMM_NREXCL=3 is what reproduces the numbers of the
-    Alexander-the-Evil fork, which applies exclusions unconditionally.
+    mdrun prints which one is in effect; check that line before trusting a run:
+
+        Topological exclusions applied to the QM/MM electrostatics
+        (GMX_QMMM_NREXCL = 3).
+
+    To get the fork's bare behaviour back:  --env GMX_QMMM_NREXCL=0
 
     Other notes
     -----------
