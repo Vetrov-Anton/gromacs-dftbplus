@@ -77,9 +77,9 @@ From: ubuntu:26.04
     # ------------------------- knobs (edit here) -----------------------
     NJOBS=6                        # 12 cores but only 7 GB RAM: g++ would OOM
     SRC=/opt/src                   # NOT /tmp: the host /tmp is bind-mounted in
-    DFTBPLUS_VERSION=24.1          # any release with the modern C API (>=23.1)
-    PLUMED_VERSION=2.9.5
-    LIBTORCH_VERSION=2.2.0
+    DFTBPLUS_VERSION=25.1          # any release with the modern C API (>=23.1)
+    PLUMED_VERSION=2.10.1
+    LIBTORCH_VERSION=2.12.1        # PLUMED 2.10 wants torch >= 2.7
     WITH_LIBTORCH=yes              # "no" skips libtorch and PLUMED's torch CVs
     PLUMED_MODE=runtime            # runtime | shared  (runtime recommended)
     # -------------------------------------------------------------------
@@ -99,7 +99,7 @@ From: ubuntu:26.04
         libgsl-dev zlib1g-dev libfftw3-dev \
         libopenmpi-dev openmpi-bin \
         python3 python3-dev \
-        vim less htop
+        vim nano less htop
     # ubuntu 26.04 ships cmake 4.2.3.  The earlier pip install of a newer cmake
     # (needed on 20.04, which had only 3.16) is gone; pip on modern ubuntu is
     # PEP 668 "externally managed" and would refuse anyway.
@@ -140,8 +140,23 @@ From: ubuntu:26.04
     # ------------------------------------------------------------------
     if [ "${WITH_LIBTORCH}" = "yes" ]; then
         cd ${SRC}
-        wget -q --no-check-certificate -O libtorch.zip \
-            "https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2Bcpu.zip"
+        # The archive lost its "cxx11-abi-" infix around torch 2.8, when cxx11
+        # became the only ABI: 2.2.0 exists only under the old name, 2.12.1 only
+        # under the new one.  Try the modern name first and fall back, and check
+        # the result - `wget -O` leaves a stub on a 404, which would otherwise
+        # surface much later as a confusing unzip failure.
+        LT_URL=https://download.pytorch.org/libtorch/cpu
+        rm -f libtorch.zip
+        for _n in "libtorch-shared-with-deps-${LIBTORCH_VERSION}%2Bcpu.zip" \
+                  "libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2Bcpu.zip"; do
+            if wget -q --no-check-certificate -O libtorch.zip "${LT_URL}/${_n}"; then
+                echo "libtorch archive: ${_n}"
+                break
+            fi
+            rm -f libtorch.zip
+        done
+        test -s libtorch.zip
+        unzip -tq libtorch.zip
         cd /opt && unzip -q ${SRC}/libtorch.zip
         rm -f ${SRC}/libtorch.zip
     fi
