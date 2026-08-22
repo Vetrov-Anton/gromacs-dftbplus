@@ -1,8 +1,9 @@
 Bootstrap: docker
-From: ubuntu:20.04
+From: ubuntu:24.04
 
 # ---------------------------------------------------------------------------
 # GROMACS 2022 fork (Vetrov-Anton/gromacs-dftbplus), branch `modernize`
+#   base   : ubuntu 24.04 / GCC 13.3
 #   + DFTB+  : QM/MM backend, linked via find_package(DftbPlus CONFIG)
 #   + PLUMED : runtime-linked, so the PLUMED version is swappable after the
 #              build just by pointing PLUMED_KERNEL somewhere else
@@ -33,10 +34,13 @@ From: ubuntu:20.04
 #      build container, and leftovers from an earlier run make tar and
 #      configure fail in ways that look like a broken compiler.
 #   3. `file` is installed - FFTW's configure needs /usr/bin/file.
-#   4. Base is ubuntu:20.04 (GCC 9) ON PURPOSE.  With GCC 11 (ubuntu 22.04)
-#      densityfitting.cpp fails: gmx::IndexGroupsAndNames is only
-#      forward-declared in mdmodulenotification.h, and GCC 11's std::function
-#      constructor requires a complete type.
+#   4. (no longer applies) Earlier recipes pinned ubuntu:20.04 (GCC 9) because
+#      GCC 11 could not compile densityfitting.cpp: gmx::IndexGroupsAndNames is
+#      only forward-declared in mdmodulenotification.h and GCC 11's
+#      std::function constructor required a complete type.  libstdc++ dropped
+#      that requirement after GCC 11, and this was verified by building the
+#      whole of libgromacs on ubuntu:24.04 / GCC 13.3: 869 targets, zero
+#      compiler errors, densityfitting.cpp among them.  The base is now 24.04.
 #   5. PLUMED is built ONCE, in runtime mode.  The old aozalevsky recipe built
 #      2.7.4, linked GROMACS against it in `shared` mode, then deleted it and
 #      dropped 2.9.0 at the same path - an unverifiable ABI gamble.  Runtime
@@ -81,16 +85,17 @@ From: ubuntu:20.04
     apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
         ca-certificates wget git unzip xxd patch file \
         build-essential gfortran \
-        ninja-build \
+        cmake ninja-build \
         libopenblas-dev liblapack-dev \
         libgsl-dev zlib1g-dev libfftw3-dev \
         libopenmpi-dev openmpi-bin \
-        python3 python3-dev python3-pip \
+        python3 python3-dev \
         vim less htop
-    # ubuntu 20.04 ships cmake 3.16; DFTB+ >= 23 wants a newer one
-    pip3 install -U setuptools "cython<3" "cmake<4"
-    export PATH=/usr/local/bin:${PATH}
+    # ubuntu 24.04 ships cmake 3.28, new enough for DFTB+ >= 23; the earlier
+    # pip install of a newer cmake (needed on 20.04) is gone.  Note that pip on
+    # 24.04 is PEP 668 "externally managed" and would refuse anyway.
     cmake --version
+    gcc --version | head -1
 
     # ------------------------------------------------------------------
     # 2. DFTB+  ->  /opt/dftbplus

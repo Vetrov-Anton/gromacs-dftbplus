@@ -77,11 +77,19 @@ extern "C" void calcqmextpotgrad(void *refptr, gmx_unused double *q, double *ext
 
 // Real DFTB+ C API, provided by the installed DftbPlus::DftbPlus CMake target
 // (see find_package(DftbPlus CONFIG) in the linking CMakeLists.txt files).
+//
+// qmmm.cpp includes this header unconditionally, so the include below must be
+// guarded: without it, every configuration with GMX_QMMM_PROGRAM other than
+// dftbplus fails with "dftbplus.h: No such file or directory".
+#include "config.h"
+
+#if GMX_QMMM_DFTBPLUS
 // dftbplus.h uses the C99 keyword _Bool (e.g. in dftbp_is_instance_safe()),
 // which is not valid C++ even inside its extern "C" block; _Bool is not a
 // reserved word in C++, so this alias is a safe, self-contained workaround.
-#define _Bool bool
-#include <dftbplus.h>
-#undef _Bool
+#    define _Bool bool
+#    include <dftbplus.h>
+#    undef _Bool
+#endif
 
 #endif
