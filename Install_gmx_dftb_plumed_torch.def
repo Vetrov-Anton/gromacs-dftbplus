@@ -1,0 +1,281 @@
+Bootstrap: docker
+From: ubuntu:26.04
+
+# ---------------------------------------------------------------------------
+# GROMACS 2022 with DFTB+ QM/MM and PLUMED.
+#
+#   DFTB+    : QM/MM backend, located with find_package(DftbPlus CONFIG)
+#   PLUMED   : linked in runtime mode, so the PLUMED version can be swapped
+#              after the build by pointing PLUMED_KERNEL somewhere else
+#   libtorch : lets PLUMED build its pytorch module (neural-network CVs)
+#
+# Build:
+#     apptainer build --fakeroot gmx_dftbplus.sif Install_gmx_dftb_plumed_torch.def
+# ---------------------------------------------------------------------------
+
+%post -c /bin/bash
+    set -e -x
+    export DEBIAN_FRONTEND=noninteractive
+
+    # ------------------------- knobs (edit here) -----------------------
+    NJOBS=6
+    SRC=/opt/src                   # not /tmp: the host /tmp is bind-mounted
+                                   # into the container during the build
+    GROMACS_REPO=https://github.com/Vetrov-Anton/gromacs-dftbplus.git
+    GROMACS_BRANCH=main
+    DFTBPLUS_VERSION=25.1          # any release with the modern C API (>= 23.1)
+    PLUMED_VERSION=2.10.1
+    LIBTORCH_VERSION=2.12.1        # PLUMED 2.10 requires torch >= 2.7
+    WITH_LIBTORCH=yes              # "no" skips libtorch and the pytorch CVs
+    PLUMED_MODE=runtime            # runtime | shared  (runtime recommended)
+    # -------------------------------------------------------------------
+
+    mkdir -p ${SRC}
+
+    # ------------------------------------------------------------------
+    # 1. Toolchain and libraries
+    # ------------------------------------------------------------------
+    apt-get update -y
+    apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
+        ca-certificates wget git unzip xxd patch file \
+        build-essential gfortran \
+        cmake ninja-build \
+        libopenblas-dev liblapack-dev \
+        libgsl-dev zlib1g-dev libfftw3-dev \
+        libopenmpi-dev openmpi-bin \
+        python3 python3-dev \
+        vim nano less htop
+    cmake --version
+    gcc --version | head -1
+
+    # ------------------------------------------------------------------
+    # 2. DFTB+  ->  /opt/dftbplus
+    #    Shared build with the C API on; GROMACS finds it through
+    #    /opt/dftbplus/lib/cmake/dftbplus/dftbplus-config.cmake
+    # ------------------------------------------------------------------
+    cd ${SRC}
+    rm -rf dftbplus
+    git clone --recursive --depth 1 -b ${DFTBPLUS_VERSION} \
+        https://github.com/dftbplus/dftbplus.git
+    cd dftbplus
+    cmake -B _build -G Ninja \
+        -DCMAKE_INSTALL_PREFIX=/opt/dftbplus \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=ON \
+        -DWITH_API=ON \
+        -DENABLE_DYNAMIC_LOADING=ON \
+        -DWITH_TBLITE=ON \
+        -DWITH_SDFTD3=ON \
+        -DWITH_MPI=OFF \
+        -DWITH_OMP=ON \
+        -DWITH_PYTHON=OFF \
+        -DBUILD_TESTING=OFF \
+        -DHYBRID_CONFIG_METHODS="Submodule;Find;Fetch"
+    cmake --build _build -- -j${NJOBS}
+    cmake --install _build
+    test -f /opt/dftbplus/lib/cmake/dftbplus/dftbplus-config.cmake
+    cd ${SRC} && rm -rf dftbplus
+
+    # ------------------------------------------------------------------
+    # 3. libtorch  ->  /opt/libtorch
+    # ------------------------------------------------------------------
+    if [ "${WITH_LIBTORCH}" = "yes" ]; then
+        cd ${SRC}
+        # The archive lost its "cxx11-abi-" infix around torch 2.8, when cxx11
+        # became the only ABI, so both names have to be tried.  wget -O leaves
+        # a stub behind on a 404; check the result instead of discovering it
+        # later as a confusing unzip failure.
+        LT_URL=https://download.pytorch.org/libtorch/cpu
+        rm -f libtorch.zip
+        for _n in "libtorch-shared-with-deps-${LIBTORCH_VERSION}%2Bcpu.zip" \
+                  "libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2Bcpu.zip"; do
+            if wget -q --no-check-certificate -O libtorch.zip "${LT_URL}/${_n}"; then
+                echo "libtorch archive: ${_n}"
+                break
+            fi
+            rm -f libtorch.zip
+        done
+        test -s libtorch.zip
+        unzip -tq libtorch.zip
+        cd /opt && unzip -q ${SRC}/libtorch.zip
+        rm -f ${SRC}/libtorch.zip
+    fi
+
+    # ------------------------------------------------------------------
+    # 4. PLUMED  ->  /opt/plumed
+    # ------------------------------------------------------------------
+    cd ${SRC}
+    wget -q --no-check-certificate \
+        https://github.com/plumed/plumed2/releases/download/v${PLUMED_VERSION}/plumed-src-${PLUMED_VERSION}.tgz
+    rm -rf plumed-${PLUMED_VERSION}
+    tar xf plumed-src-${PLUMED_VERSION}.tgz
+    cd plumed-${PLUMED_VERSION}
+
+    PLUMED_CONF_EXTRA=""
+    if [ "${WITH_LIBTORCH}" = "yes" ]; then
+        sed -i 's/c++14/c++17/' configure
+        export CPATH=${CPATH:-}:/opt/libtorch/include/torch/csrc/api/include:/opt/libtorch/include
+        export LIBRARY_PATH=${LIBRARY_PATH:-}:/opt/libtorch/lib
+        export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:/opt/libtorch/lib
+        PLUMED_CONF_EXTRA="--enable-libtorch"
+    fi
+    export PYTHON_BIN=$(which python3)
+
+    ./configure --prefix=/opt/plumed --enable-modules=all ${PLUMED_CONF_EXTRA}
+    make -j${NJOBS}
+    make install
+    test -f /opt/plumed/lib/libplumedKernel.so
+    cd ${SRC} && rm -rf plumed-${PLUMED_VERSION} plumed-src-${PLUMED_VERSION}.tgz
+
+    # ------------------------------------------------------------------
+    # 5. GROMACS
+    #
+    #    The sources already carry the PLUMED integration, so `plumed patch`
+    #    must NOT be run.  Only the three files it would drop into the source
+    #    root are needed:
+    #      Plumed.h     - wrapper header, included as "../../../Plumed.h"
+    #      Plumed.cmake - defines ${PLUMED_LOAD}, included by
+    #                     src/gromacs/CMakeLists.txt when GMX_PLUMED=ON
+    #      Plumed.inc   - used only by the (unused) GNU-make build
+    # ------------------------------------------------------------------
+    cd ${SRC}
+    rm -rf gromacs-dftbplus
+    git clone -b ${GROMACS_BRANCH} ${GROMACS_REPO} gromacs-dftbplus
+    cd gromacs-dftbplus
+    git log -1 --format='building %H (%ad)' --date=short
+
+    PLUMED_PREFIX=/opt/plumed
+    PLUMED_ROOT=${PLUMED_PREFIX}/lib/plumed
+    ln -fs ${PLUMED_PREFIX}/include/plumed/wrapper/Plumed.h   Plumed.h
+    ln -fs ${PLUMED_ROOT}/src/lib/Plumed.inc.${PLUMED_MODE}   Plumed.inc
+    ln -fs ${PLUMED_ROOT}/src/lib/Plumed.cmake.${PLUMED_MODE} Plumed.cmake
+    test -e Plumed.h && test -e Plumed.inc && test -e Plumed.cmake
+
+    mkdir -p build && cd build
+    # __PLUMED_WRAPPER_CXX_BIND_C=0: the QM/MM code takes the address of
+    # plumed_cmd, which from PLUMED 2.9 on is a macro for an overloaded C++
+    # template.  The flag restores the plain C symbol.
+    #
+    # GMX_QMMM_DFTBPLUS_LIB is the DFTB+ install PREFIX, not <prefix>/lib.
+    cmake .. \
+        -DCMAKE_INSTALL_PREFIX=/opt/gmx \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_FLAGS="-D__PLUMED_WRAPPER_CXX_BIND_C=0" \
+        -DGMX_QMMM_PROGRAM=dftbplus \
+        -DGMX_QMMM_DFTBPLUS_LIB=/opt/dftbplus \
+        -DGMX_PLUMED=ON \
+        -DGMX_DOUBLE=ON \
+        -DGMX_MPI=ON \
+        -DGMX_OPENMP=ON \
+        -DGMX_GPU=OFF \
+        -DGMX_DEFAULT_SUFFIX=OFF \
+        -DGMXAPI=OFF \
+        -DGMX_INSTALL_NBLIB_API=OFF \
+        -DGMX_BUILD_OWN_FFTW=ON \
+        -DGMX_BUILD_MANUAL=OFF \
+        -DBUILD_TESTING=OFF \
+        -DGMX_BUILD_UNITTESTS=OFF \
+        -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
+        -DCMAKE_INSTALL_RPATH="/opt/dftbplus/lib;/opt/plumed/lib"
+    make -j${NJOBS}
+    make install
+    cd ${SRC} && rm -rf gromacs-dftbplus
+
+    # ------------------------------------------------------------------
+    # 6. Cleanup
+    # ------------------------------------------------------------------
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+%environment
+    export LC_ALL=C
+    export PATH=/opt/gmx/bin:/opt/plumed/bin:/opt/dftbplus/bin:${PATH}
+    export LD_LIBRARY_PATH=/opt/gmx/lib:/opt/gmx/lib64:/opt/dftbplus/lib:/opt/plumed/lib:/opt/libtorch/lib:${LD_LIBRARY_PATH}
+    # PLUMED is runtime-linked: this variable is the only thing tying gmx to a
+    # particular PLUMED build, so another one needs no GROMACS rebuild.
+    export PLUMED_KERNEL=/opt/plumed/lib/libplumedKernel.so
+    export PLUMED_ROOT=/opt/plumed/lib/plumed
+    # QM/MM electrostatics variant (0..4); 1 = full electrostatic QM/MM
+    export GMX_QMMM_VARIANT=1
+    export OMP_NUM_THREADS=1
+    # Topological exclusions in the QM/MM electrostatics.  The code defaults to
+    # 0 (none); 3 excludes 1-2 and 1-3 QM-MM pairs and scales 1-4 pairs by
+    # fudgeQQ.  Override per run with --env GMX_QMMM_NREXCL=<0..3>.
+    export GMX_QMMM_NREXCL=3
+
+%runscript
+    exec gmx "$@"
+
+%test
+    export PATH=/opt/gmx/bin:/opt/plumed/bin:${PATH}
+    export LD_LIBRARY_PATH=/opt/gmx/lib:/opt/gmx/lib64:/opt/dftbplus/lib:/opt/plumed/lib:/opt/libtorch/lib:${LD_LIBRARY_PATH:-}
+    export PLUMED_KERNEL=/opt/plumed/lib/libplumedKernel.so
+    gmx --version | head -20
+    plumed info --version
+    gmx mdrun -h 2>&1 | grep -q -- '-plumed' && echo "OK: gmx mdrun has -plumed"
+    ldd /opt/gmx/lib/libgromacs.so | grep -qi dftb && echo "OK: libgromacs links DFTB+"
+    ldd /opt/gmx/lib/libgromacs.so | grep -qi plumed && \
+        echo "WARNING: libgromacs has a hard PLUMED dependency (expected: none)" || \
+        echo "OK: no DT_NEEDED on PLUMED - kernel is dlopen'ed via PLUMED_KERNEL"
+
+%labels
+    Author      Anton Vetrov <vetrov.anton.a@gmail.com>
+    GROMACS     2022, DFTB+ QM/MM
+    QMMM        DFTB+
+    PLUMED      runtime-linked
+
+%help
+    GROMACS 2022 (double precision, OpenMPI) with DFTB+ QM/MM and PLUMED.
+
+    Build
+    -----
+        apptainer build --fakeroot gmx_dftbplus.sif Install_gmx_dftb_plumed_torch.def
+
+    Run
+    ---
+        apptainer exec gmx_dftbplus.sif gmx grompp -f md.mdp -c c.gro -p t.top -o md.tpr
+        apptainer exec gmx_dftbplus.sif mpirun -np 1 gmx mdrun -deffnm md -plumed plumed.dat
+
+    QM/MM exclusions - READ THIS
+    ----------------------------
+    THIS IMAGE SETS GMX_QMMM_NREXCL=3 IN %environment, which is NOT the code's
+    own default.  Built from bare sources the QM/MM electrostatics applies no
+    topological exclusions at all: every MM atom within the cut-off polarizes
+    the QM density, covalently bonded neighbours included.
+
+        GMX_QMMM_NREXCL=0              no exclusions (the code's own default,
+                                       NOT this image's)
+        GMX_QMMM_NREXCL=1|2|3          exclude up to 1-2 / 1-3 / 1-4 neighbours;
+                                       1-4 pairs are scaled by fudgeQQ
+        GMX_QMMM_FUDGEQQ=<x>           override the force field's fudgeQQ
+
+    mdrun prints which setting is in effect; check that line before trusting a
+    run:
+
+        Topological exclusions applied to the QM/MM electrostatics
+        (GMX_QMMM_NREXCL = 3).
+
+    To get the bare behaviour back:  --env GMX_QMMM_NREXCL=0
+
+    Note that GMX_QMMM_NREXCL is purely electrostatic.  It scales the MM point
+    charges entering the QM Hamiltonian and never touches Lennard-Jones: QM-MM
+    van der Waals is handled by the classical force field throughout, whatever
+    it is set to.
+
+    Other notes
+    -----------
+      * DFTB+ needs a dftb_in.hsd in the working directory, and the QM atom
+        ORDER there must match the QM group of the .mdp.  Slater-Koster
+        parameter sets (e.g. 3ob-3-1) are NOT bundled - fetch them from
+        dftb.org.
+      * A dftb_in.hsd written for DFTB+ 21.2 needs one edit: replace
+        Analysis{CalculateForces} with Analysis{PrintForces}.  Without it the
+        parser halts on the unknown key, and merely deleting the key makes the
+        run die after the SCC with "Forces not available".
+      * GMX_QMMM_VARIANT selects the QM/MM electrostatics scheme (0..4);
+        preset to 1 here.
+      * Legacy GROMACS QM/MM has no domain decomposition - use a single rank.
+      * Swapping PLUMED without rebuilding GROMACS:
+            apptainer exec -B /my/plumed:/my/plumed \
+                --env PLUMED_KERNEL=/my/plumed/lib/libplumedKernel.so \
+                gmx_dftbplus.sif gmx mdrun ...

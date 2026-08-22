@@ -21,23 +21,31 @@ is involved. With none of them set, the build behaves exactly like the original 
 
 ### GROMACS
 
-Two container recipes ship with the repository. Both build DFTB+ 21.2 (with the API, tblite
-and s-dftd3), PLUMED with libtorch, and this GROMACS in double precision with MPI.
-
-**Docker:**
-
-```bash
-docker build -t gmx-dftbplus -f gmx_dftbplus_new.dockerfile .
-```
-
-**Apptainer / Singularity:**
+A single Apptainer/Singularity recipe ships with the repository. It builds DFTB+ 25.1 (with
+the API, tblite and s-dftd3), PLUMED 2.10 linked in runtime mode with libtorch, and this
+GROMACS in double precision with MPI, on Ubuntu 26.04:
 
 ```bash
-apptainer build --fakeroot gmx_dftbplus.sif gmx_dftbplus_plumed_torch_openblas.def
+apptainer build --fakeroot gmx_dftbplus.sif Install_gmx_dftb_plumed_torch.def
 ```
 
-Note that the `%environment` section of the definition file already sets
-`GMX_QMMM_VARIANT=1` and `OMP_NUM_THREADS=1` inside the container.
+Versions are set in one block at the top of `%post`, so DFTB+, PLUMED and libtorch can each
+be moved without touching anything else.
+
+The `%environment` section presets `GMX_QMMM_VARIANT=1`, `OMP_NUM_THREADS=1` and
+**`GMX_QMMM_NREXCL=3`** inside the container. The last one is not the code's own default —
+see [section 1](#1-exclusions-at-the-qmmm-boundary-mdrun) — so override it per run if you
+want the bare behaviour:
+
+```bash
+apptainer exec --env GMX_QMMM_NREXCL=0 gmx_dftbplus.sif gmx mdrun ...
+```
+
+Because PLUMED is linked at runtime, another PLUMED build can be used without rebuilding
+GROMACS, by pointing `PLUMED_KERNEL` at its kernel.
+
+A `dftb_in.hsd` written for DFTB+ 21.2 needs one edit for the version built here: replace
+`Analysis{CalculateForces}` with `Analysis{PrintForces}`.
 
 ### QMMMtools
 
@@ -192,76 +200,19 @@ No term spanning the boundary was removed: every force-field term with at least 
 The middle column is the interesting one: it is exactly what the two schemes disagree about.
 With `classic` it is non-zero and the message instead points at `GMX_QMMM_BONDED_SCHEME`.
 Chemical bonds between two QM atoms are not lost but converted to connections
-(`F_CONNBONDS`); removed 1-4 pairs are listed as well.
+(`F_CONNBONDS`).
+
+The `LJ-14` row counts `[ pairs ]` entries, and is worth three remarks. Each entry carries
+**both** the 1-4 Lennard-Jones and the 1-4 Coulomb term (`F_COUL14` has no list of its own),
+so removing one removes both. Pairs with both atoms QM are dropped under every scheme, since
+DFTB+ computes that interaction explicitly and the classical copy would double-count it.
+Pairs between a QM atom and a link atom are where the schemes differ: `classic` drops them,
+`amber` keeps them. Do not confuse any of this with `GMX_QMMM_NREXCL` (section 1): that acts
+in `mdrun` on the MM charges entering the QM Hamiltonian and never touches Lennard-Jones,
+whereas the `LJ-14` removal happens in `grompp` and is written into the `tpr`.
 
 A warning about QM atoms in several molecule types is now issued for the `amber` scheme too
 (previously only for `classic`).
-
-### What `LJ-14` is, and why it is removed
-
-`LJ-14` is the row of the report that surprises people most, so it is worth spelling out.
-
-**In a plain MM force field.** Two atoms separated by exactly three bonds — the first and
-the last atom of a torsion, `1-2-3-4` — are called a *1-4 pair*. Most force fields declare
-`nrexcl = 3`, which means all pairs up to three bonds apart are excluded from the normal
-nonbonded loop. If nothing else were done, the 1-4 atoms would then feel no nonbonded force
-at all. So the force field puts a **special, scaled-down copy** of the interaction back, as
-an explicit entry in the `[ pairs ]` section of the topology. That entry is what GROMACS
-calls `F_LJ14`, and it is what the `LJ-14` row counts.
-
-Two things about it are easy to get wrong:
-
-* Despite the name, **each `[ pairs ]` entry carries both the 1-4 Lennard-Jones *and* the
-  1-4 Coulomb interaction.** `F_COUL14` has no interaction list of its own in GROMACS
-  (it is declared `def_nofc`) — the Coulomb-14 energy is computed from the same `[ pairs ]`
-  list, with the electrostatic part multiplied by `fudgeQQ`. Removing one `LJ-14` entry
-  therefore removes *both* 1-4 terms for that atom pair.
-* The 1-4 pair term is **not** a leftover or a correction — it is part of the torsion
-  parametrization. The dihedral potential and the 1-4 pair were fitted *together* against
-  the same reference data, which is why the pair term cannot simply be deleted in ordinary
-  MM work without breaking the torsion.
-
-**At the QM/MM boundary.** Now consider a 1-4 pair in which **both atoms are QM**. DFTB+
-computes the real, electron-mediated interaction between those two atoms explicitly, from
-first principles — including everything the classical 1-4 term was a crude stand-in for. If
-the `[ pairs ]` entry were left in the topology, that interaction would be counted twice:
-once quantum-mechanically, once classically. So the entry is removed. This happens under
-**every** scheme — `classic`, `amber` and MiMiC alike — for exactly the same reason that the
-QM–QM bonds, angles and dihedrals are removed. Those pairs land in the **all-QM** column of
-the report, and their count is usually the second largest after the dihedrals.
-
-**Where the schemes differ** is the pair between a **QM atom and a link atom** (an MM atom
-covalently bound to the QM region, "MM1"):
-
-* `classic` removes it as well, on the assumption that the QM calculation with the link atom
-  already describes the boundary. These pairs appear in the **QM--MM** column.
-* `amber` keeps it. The link atom is a *hydrogen* sitting ~1.09 Å from the QM atom, not the
-  real MM1 atom in its real position with its real mass, so what the QM calculation produces
-  is not a substitute for the force-field term. The internal flag that marks link atoms is
-  simply never set with this scheme, so only the QM–QM pairs are dropped, and the
-  **QM--MM** column comes out zero.
-
-In the source this is the loop `for (int i = F_LJ14; i < F_COUL14; i++)` near the end of
-`generate_qmexcl_moltype()` in `topio.cpp` — which, given the enum order above, runs over
-`F_LJ14` alone.
-
-**Do not confuse this with `GMX_QMMM_NREXCL`.** Both use the phrase "1-4" and both involve
-`fudgeQQ`, but they act on different things at different times:
-
-| | `LJ-14` removal (this section) | `GMX_QMMM_NREXCL` (section 1) |
-|---|---|---|
-| when | `grompp`, written into the `tpr` | `mdrun`, every step |
-| acts on | the classical `[ pairs ]` list of the MM force field | the MM point charges entering the **QM Hamiltonian** |
-| affects | the MM energy term | how strongly the MM environment polarizes the QM density |
-| pairs concerned | QM–QM (all schemes) and QM–link (`classic` only) | QM–MM, up to 3 bonds |
-| Lennard-Jones | yes, removed together with the Coulomb part | **never touched** — `GMX_QMMM_NREXCL` is purely electrostatic |
-
-The last row deserves emphasis: the QM atoms keep their Lennard-Jones parameters throughout,
-and the QM–MM van der Waals interaction is handled by the classical force field in the normal
-way, whatever you set `GMX_QMMM_NREXCL` to. Only the *charges* of the QM atoms are zeroed
-(they are replaced by the QM density), and only the *charges* of nearby MM atoms are scaled
-in the embedding potential.
-
 
 ---
 
@@ -301,9 +252,14 @@ large stride. Each variable prints a confirmation line at startup.
 
 ```bash
 gmx() {
-singularity run  --env GMX_QMMM_VARIANT=1 --env OMP_NUM_THREADS=1 --env GMX_QMMM_NREXCL=3   --nv -B /home/domain/data:/home/domain/data --pwd $(pwd) /home/domain/data/avetrov/build_dftb_gmx/new_gmx_dftb.sif /opt/gmx/bin/gmx $@
+apptainer run -B /home:/home --pwd $(pwd) /path/to/gmx_dftbplus.sif $@
 }
+```
 
+`GMX_QMMM_VARIANT=1`, `OMP_NUM_THREADS=1` and `GMX_QMMM_NREXCL=3` are already set inside the
+image; add `--env NAME=value` to override any of them for a single run.
+
+```bash
 gmx grompp -f qm.mdp -p qm.top -n qm.ndx -c qm.gro -o qw.tpr -r qm.gro -maxwarn 4
 
 gmx mdrun -deffnm qw -ntomp 1 -pin on -pinoffset 0 -v
@@ -342,7 +298,7 @@ and **order** do.
 | variable | read by | values | default |
 |---|---|---|---|
 | `GMX_QMMM_BONDED_SCHEME` | grompp | `classic`, `amber` | `classic` |
-| `GMX_QMMM_NREXCL` | mdrun | `0`–`3` | `0` |
+| `GMX_QMMM_NREXCL` | mdrun | `0`–`3` | `0` (image presets `3`) |
 | `GMX_QMMM_FUDGEQQ` | mdrun | float | force-field `fudgeQQ` |
 | `GMX_QMMM_VARIANT` | mdrun | `0`–`4` | `0` |
 | `GMX_QMMM_PME_DIPCOR` | mdrun | set/unset | unset (disabled) |
