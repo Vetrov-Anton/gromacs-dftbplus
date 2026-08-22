@@ -336,6 +336,13 @@ target_link_libraries(libgromacs
 if (GMX_PLUMED)
     target_link_libraries(libgromacs PUBLIC ${PLUMED_LOAD})
 endif()
+if (GMX_QMMM_DFTBPLUS)
+    # The QM/MM code lives in libgromacs, so libgromacs itself must carry the
+    # DFTB+ dependency - not only the gmx/mdrun executables.
+    list(APPEND CMAKE_PREFIX_PATH ${GMX_QMMM_DFTBPLUS_LIB})
+    find_package(DftbPlus CONFIG REQUIRED)
+    target_link_libraries(libgromacs PRIVATE DftbPlus::DftbPlus)
+endif()
 target_link_libraries(libgromacs PUBLIC legacy_api)
 # Dependencies from libgromacs to the modules are set up here, but
 # once the add_subdirectory() commands are re-ordered then

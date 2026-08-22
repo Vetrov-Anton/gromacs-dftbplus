@@ -669,6 +669,12 @@ elseif(${GMX_QMMM_PROGRAM} STREQUAL "ORCA")
     set(GMX_QMMM_ORCA 1)
 elseif(${GMX_QMMM_PROGRAM} STREQUAL "DFTBPLUS")
     set(GMX_QMMM_DFTBPLUS 1)
+    set(GMX_QMMM_DFTBPLUS_LIB "" CACHE PATH
+        "Install prefix of a DFTB+ build (the directory containing lib/cmake/dftbplus/dftbplus-config.cmake), used to locate it via find_package(DftbPlus CONFIG)")
+    # DFTB+'s exported CMake package looks for an OpenMP::OpenMP_Fortran
+    # target, which CMake's FindOpenMP only provides when Fortran is an
+    # enabled language of the consuming project.
+    enable_language(Fortran)
 elseif(${GMX_QMMM_PROGRAM} STREQUAL "NONE")
     # nothing to do
 else()

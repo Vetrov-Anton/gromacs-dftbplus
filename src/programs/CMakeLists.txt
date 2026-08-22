@@ -159,40 +159,15 @@ else()
 endif()
 
 if (GMX_QMMM_DFTBPLUS)
-    LINK_DIRECTORIES(GMX_QMMM_DFTBPLUS_LIB)
-    add_library(libdftbplus STATIC IMPORTED)
-    set_target_properties(libdftbplus PROPERTIES IMPORTED_LOCATION ${GMX_QMMM_DFTBPLUS_LIB}/libdftbplus.a)
-    add_library(libdftd3 STATIC IMPORTED)
-    set_target_properties(libdftd3 PROPERTIES IMPORTED_LOCATION ${GMX_QMMM_DFTBPLUS_LIB}/libdftd3.a)
-    add_library(libmudpack STATIC IMPORTED)
-    set_target_properties(libmudpack PROPERTIES IMPORTED_LOCATION ${GMX_QMMM_DFTBPLUS_LIB}/libmudpack.a)
-
-    # search for the gfortran and gomp libraries in the system
-    # first look for possible library locations
-    unset(_lib_env)
-    string(REPLACE ":" ";" _lib_env "$ENV{LD_LIBRARY_PATH}")
-    list(APPEND _lib_env "${CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES}")
-    list(APPEND _lib_env "${CMAKE_C_IMPLICIT_LINK_DIRECTORIES}")
-    list(REMOVE_DUPLICATES _lib_env)
-    set(PATH_TO_LOOK_FOR "${_lib_env}")
-    # try to find the gfortran lib in the given paths and add it
-    find_library(GFORTRAN
-        NAMES libgfortran.so.5 libgfortran.so.4
-        HINTS ${PATH_TO_LOOK_FOR})
-    add_library(gfortran SHARED IMPORTED)
-    set_target_properties(gfortran PROPERTIES IMPORTED_LOCATION ${GFORTRAN})
-    # try to find the gomp lib in the given paths and add it
-    find_library(GOMP
-        NAMES libgomp.so.1 libgomp.so
-        HINTS ${PATH_TO_LOOK_FOR})
-    add_library(gomp SHARED IMPORTED)
-    set_target_properties(gomp PROPERTIES IMPORTED_LOCATION ${GOMP})
+    # GMX_QMMM_DFTBPLUS_LIB is the DFTB+ *install prefix*; the package config
+    # file it exports carries the transitive dependencies (tblite, s-dftd3,
+    # gfortran, gomp, ...) so nothing has to be named by hand here.
+    list(APPEND CMAKE_PREFIX_PATH ${GMX_QMMM_DFTBPLUS_LIB})
+    find_package(DftbPlus CONFIG REQUIRED)
 
     if(GMX_BUILD_MDRUN_ONLY)
-        target_link_libraries(mdrun PRIVATE libdftbplus libdftd3 libmudpack gfortran gomp)
-       #target_link_libraries(mdrun libdftbplus libxmlf90 libdftd3 gfortran gomp)
+        target_link_libraries(mdrun PRIVATE DftbPlus::DftbPlus)
     else()
-        target_link_libraries(gmx PRIVATE libdftbplus libdftd3 libmudpack gfortran gomp)
-       #target_link_libraries(gmx libdftbplus libxmlf90 libdftd3 gfortran gomp)
+        target_link_libraries(gmx PRIVATE DftbPlus::DftbPlus)
     endif()
 endif()

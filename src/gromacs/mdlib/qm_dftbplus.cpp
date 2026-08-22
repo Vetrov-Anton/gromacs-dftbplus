@@ -227,7 +227,6 @@ void init_dftbplus(QMMM_QMrec*       qm,
 
     static DftbPlus  calculator;
     DftbPlusInput    input;
-    DftbPlusAtomList atomList;
 
     /* This structure will be passed through DFTB+
      *   into the Gromacs calculator calcQMextPot
@@ -247,6 +246,12 @@ void init_dftbplus(QMMM_QMrec*       qm,
     /* Initialize the DFTB+ calculator */
     dftbp_init(&calculator, "dftb_in.out");
     printf("DFTB+ calculator has been created!\n");
+
+    {
+        int apiMajor, apiMinor, apiPatch;
+        dftbp_api(&apiMajor, &apiMinor, &apiPatch);
+        printf("Linked DFTB+ API version = %d.%d.%d\n", apiMajor, apiMinor, apiPatch);
+    }
 
     /* Parse the input file and store the input-tree */
     dftbp_get_input_from_file(&calculator, "dftb_in.hsd", &input);
@@ -294,15 +299,16 @@ void init_dftbplus(QMMM_QMrec*       qm,
     for (int i=0; i<nAtom; i++)
         printf("Atom %d is species %d\n", i+1, ptrSpecies[i]);
 
-    // finally, call the DFTB+ routine
-    dftbp_get_atom_list(&atomList, &nAtom, &nSpecies, (char *) ptrElement, ptrSpecies);
-    printf("DFTB+ has obtained the list of QM atoms!\n");
+    // NOTE: DFTB+'s C API no longer accepts a programmatically supplied atom
+    // list (the old dftbp_get_atom_list() call was removed upstream). The QM
+    // atom identities/order above must match the Geometry block already
+    // present in dftb_in.hsd, which dftbp_get_input_from_file() has parsed.
 
     sfree(atomicNumber);
     sfree(ptrSpecies);
 
     /* Set up the calculator by processing the input tree */
-    dftbp_process_input(&calculator, &input, &atomList);
+    dftbp_process_input(&calculator, &input);
     printf("DFTB+ input has been processed!\n");
 
     qm->dpcalc = &calculator;
