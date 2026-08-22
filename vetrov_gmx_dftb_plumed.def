@@ -1,9 +1,9 @@
 Bootstrap: docker
-From: ubuntu:24.04
+From: ubuntu:26.04
 
 # ---------------------------------------------------------------------------
 # GROMACS 2022 fork (Vetrov-Anton/gromacs-dftbplus), branch `modernize`
-#   base   : ubuntu 24.04 / GCC 13.3
+#   base   : ubuntu 26.04 LTS / GCC 15.2 / cmake 4.2
 #   + DFTB+  : QM/MM backend, linked via find_package(DftbPlus CONFIG)
 #   + PLUMED : runtime-linked, so the PLUMED version is swappable after the
 #              build just by pointing PLUMED_KERNEL somewhere else
@@ -38,9 +38,18 @@ From: ubuntu:24.04
 #      GCC 11 could not compile densityfitting.cpp: gmx::IndexGroupsAndNames is
 #      only forward-declared in mdmodulenotification.h and GCC 11's
 #      std::function constructor required a complete type.  libstdc++ dropped
-#      that requirement after GCC 11, and this was verified by building the
-#      whole of libgromacs on ubuntu:24.04 / GCC 13.3: 869 targets, zero
-#      compiler errors, densityfitting.cpp among them.  The base is now 24.04.
+#      that requirement after GCC 11.  Verified by compiling all of libgromacs
+#      with ninja -k 0, so nothing stops at the first error:
+#          ubuntu 24.04 / GCC 13.3 -> 869 targets, 0 compiler errors
+#          ubuntu 26.04 / GCC 15.2 -> 872 targets, 0 compiler errors
+#      densityfitting.cpp among them both times.  The base is now 26.04 LTS.
+#
+#      26.04 ships cmake 4.2.3, so this builds under CMake 4.  Nothing in the
+#      tree blocks it: GROMACS declares cmake_minimum_required 3.13, and the
+#      bundled subprojects that still declare < 3.5 are never processed -
+#      tng_io comes in via include(BuildTNG.cmake) rather than
+#      add_subdirectory(), and googletest/pybind need BUILD_TESTING/GMXAPI,
+#      which are off here.  DFTB+ 24.1 and its submodules declare >= 3.9.
 #   5. PLUMED is built ONCE, in runtime mode.  The old aozalevsky recipe built
 #      2.7.4, linked GROMACS against it in `shared` mode, then deleted it and
 #      dropped 2.9.0 at the same path - an unverifiable ABI gamble.  Runtime
@@ -91,9 +100,9 @@ From: ubuntu:24.04
         libopenmpi-dev openmpi-bin \
         python3 python3-dev \
         vim less htop
-    # ubuntu 24.04 ships cmake 3.28, new enough for DFTB+ >= 23; the earlier
-    # pip install of a newer cmake (needed on 20.04) is gone.  Note that pip on
-    # 24.04 is PEP 668 "externally managed" and would refuse anyway.
+    # ubuntu 26.04 ships cmake 4.2.3.  The earlier pip install of a newer cmake
+    # (needed on 20.04, which had only 3.16) is gone; pip on modern ubuntu is
+    # PEP 668 "externally managed" and would refuse anyway.
     cmake --version
     gcc --version | head -1
 
