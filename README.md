@@ -1,6 +1,6 @@
 # GROMACS + DFTB+ — QM/MM with boundary exclusions and selectable MM retention
 
-This is a fork of the GROMACS/DFTB+ QM/MM interface (GROMACS 2021 line, DFTB+ coupling
+This is a fork of the GROMACS/DFTB+ QM/MM interface (GROMACS 2022, DFTB+ coupling
 by Kubař *et al.*) with three additions:
 
 1. **Topological (1-2, 1-3, 1-4) exclusions of the QM–MM electrostatics** — the MM atoms
