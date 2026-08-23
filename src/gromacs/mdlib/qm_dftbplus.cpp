@@ -341,14 +341,20 @@ real call_dftbplus(QMMM_rec*         qr,
     static int step = 0;
     static FILE *f_q = nullptr;
     static FILE *f_p = nullptr;
+    static FILE *f_p_split = nullptr;
     static FILE *f_x_qm = nullptr;
     static FILE *f_x_mm = nullptr;
     static FILE *f_x_mm_full = nullptr;
+    static FILE *f_grad = nullptr;
+    static FILE *f_grad_full = nullptr;
     static int output_freq_q;
     static int output_freq_p;
+    static int output_freq_p_split;
     static int output_freq_x_qm;
     static int output_freq_x_mm;
     static int output_freq_x_mm_full;
+    static int output_freq_grad;
+    static int output_freq_grad_full;
 
     double QMener;
  // bool lPme = (qm->qmmm_variant == eqmmmPME);
@@ -394,6 +400,16 @@ real call_dftbplus(QMMM_rec*         qr,
             printf("The MM potential induced on QM atoms will be saved in file qm_dftb_esp.xvg every %d steps.\n", output_freq_p);
         }
 
+        // The same potential, but with the two contributions kept apart:
+        //   the MM atoms and the periodic images of the QM charges.
+        if (qm->qmmm_variant_get() != eqmmmVACUO && (env = getenv("GMX_DFTB_ESP_SPLIT")) != nullptr
+            && atoi(env) > 0)
+        {
+            output_freq_p_split = atoi(env);
+            f_p_split = fopen("qm_dftb_esp_split.xvg", "a");
+            printf("The MM and the QM-image contributions to the potential on QM atoms will be saved separately in file qm_dftb_esp_split.xvg every %d steps.\n", output_freq_p_split);
+        }
+
         if ((env = getenv("GMX_DFTB_QM_COORD")) != nullptr)
         {
             output_freq_x_qm = atoi(env);
@@ -413,6 +429,25 @@ real call_dftbplus(QMMM_rec*         qr,
             output_freq_x_mm_full = atoi(env);
             f_x_mm_full = fopen("qm_dftb_mm_full.qxyz", "a");
             printf("The full MM coordinates (XYZQ) will be saved in file qm_dftb_mm_full.qxyz every %d steps.\n", output_freq_x_mm_full);
+        }
+
+        // Gradients on the QM atoms and on the MM atoms of the short-range list.
+        if (qm->qmmm_variant_get() != eqmmmVACUO && (env = getenv("GMX_DFTB_QMMM_GRAD")) != nullptr
+            && atoi(env) > 0)
+        {
+            output_freq_grad = atoi(env);
+            f_grad = fopen("qm_dftb_grad.xvg", "a");
+            printf("The gradients on the QM atoms and on the short-range MM atoms will be saved in file qm_dftb_grad.xvg every %d steps.\n", output_freq_grad);
+        }
+
+        // Gradients on all of the MM atoms -- only meaningful with PME,
+        //   where the long-range contribution is evaluated for the entire MM subsystem.
+        if (qm->qmmm_variant_get() == eqmmmPME && (env = getenv("GMX_DFTB_QMMM_GRAD_FULL")) != nullptr
+            && atoi(env) > 0)
+        {
+            output_freq_grad_full = atoi(env);
+            f_grad_full = fopen("qm_dftb_grad_full.xvg", "a");
+            printf("The gradients on all of the MM atoms will be saved in file qm_dftb_grad_full.xvg every %d steps.\n", output_freq_grad_full);
         }
     }
 
@@ -518,6 +553,46 @@ real call_dftbplus(QMMM_rec*         qr,
     snew(partgrad, qm->nrQMatoms_get());
     qr->gradient_QM_MM(cr, nrnb, wcycle, (qm->qmmm_variant_get() == eqmmmPME ? *qr->pmedata : nullptr),
                    qm->qmmm_variant_get(), partgrad, MMgrad, MMgrad_full);
+
+    /* Optionally, write out the gradients while they are still separated.
+     * At this point, and in atomic units (hartree/bohr):
+     *   QMgrad[]   is the gradient obtained from DFTB+, i.e. the QM subsystem itself;
+     *   partgrad[] is the electrostatic gradient due to the environment --
+     *     with PME, this includes the periodic images of the QM charges;
+     *   MMgrad[]   is the electrostatic gradient on the MM atoms of the short-range list.
+     * The sum of the first two is the total gradient on the QM atom, which the loop
+     *   below accumulates in QMgrad[].
+     */
+    if (f_grad && step % output_freq_grad == 0)
+    {
+        fprintf(f_grad, "\nQM gradients: DFTB+, electrostatic, total (hartree/bohr) step %d\n", step);
+        for (int i=0; i<n; i++)
+        {
+            fprintf(f_grad, "QM %5d %12.7f%12.7f%12.7f %12.7f%12.7f%12.7f %12.7f%12.7f%12.7f\n", i+1,
+                QMgrad[i][XX], QMgrad[i][YY], QMgrad[i][ZZ],
+                partgrad[i][XX], partgrad[i][YY], partgrad[i][ZZ],
+                QMgrad[i][XX] + partgrad[i][XX],
+                QMgrad[i][YY] + partgrad[i][YY],
+                QMgrad[i][ZZ] + partgrad[i][ZZ]);
+        }
+        fprintf(f_grad, "MM gradients on the short-range list (hartree/bohr) step %d\n", step);
+        for (int i=0; i<mm.nrMMatoms; i++)
+        {
+            fprintf(f_grad, "MM %5d %8d %12.7f%12.7f%12.7f\n", i+1, mm.indexMM[i] + 1,
+                MMgrad[i][XX], MMgrad[i][YY], MMgrad[i][ZZ]);
+        }
+    }
+
+    if (f_grad_full && step % output_freq_grad_full == 0)
+    {
+        fprintf(f_grad_full, "\nMM gradients on all MM atoms (hartree/bohr) step %d\n", step);
+        for (int i=0; i<mm.nrMMatoms_full; i++)
+        {
+            fprintf(f_grad_full, "%8d %12.7f%12.7f%12.7f\n", mm.indexMM_full[i] + 1,
+                MMgrad_full[i][XX], MMgrad_full[i][YY], MMgrad_full[i][ZZ]);
+        }
+    }
+
     for (int i=0; i<n; i++)
     {
         rvec_inc(QMgrad[i], partgrad[i]); // sign OK
@@ -583,6 +658,22 @@ real call_dftbplus(QMMM_rec*         qr,
          // }
         }
         fprintf(f_p, "\n");
+    }
+
+    /* The same potential as above, with the two contributions written out separately:
+     *   the one induced by the MM atoms, and the one induced by the periodic images
+     *   of the QM charges (identically zero unless PME is used).
+     */
+    if (f_p_split && step % output_freq_p_split == 0)
+    {
+        fprintf(f_p_split, "%8d", step);
+        for (int i=0; i<n; i++)
+        {
+            fprintf(f_p_split, " %8.5f %8.5f %8.5f",
+                qm->pot_qmmm_get(i), qm->pot_qmqm_get(i),
+                qm->pot_qmmm_get(i) + qm->pot_qmqm_get(i));
+        }
+        fprintf(f_p_split, "\n");
     }
 
     if (f_x_qm && step % output_freq_x_qm == 0)

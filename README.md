@@ -1,7 +1,7 @@
 # GROMACS + DFTB+ — QM/MM with boundary exclusions and selectable MM retention
 
 This is a fork of the GROMACS/DFTB+ QM/MM interface (GROMACS 2022, DFTB+ coupling
-by Kubař *et al.*) with three additions:
+by Kubař *et al.*) with four additions:
 
 1. **Topological (1-2, 1-3, 1-4) exclusions of the QM–MM electrostatics** — the MM atoms
    covalently close to a QM atom can now be removed from (or scaled in) the external
@@ -11,6 +11,10 @@ by Kubař *et al.*) with three additions:
    GROMACS rule) or `amber` (only all-QM terms are dropped), chosen in `grompp`.
 3. **A report from `grompp`** listing every force-field term that was removed around the
    QM region, split by interaction type and by how the term straddles the boundary.
+4. **Diagnostic output for the QM/MM electrostatics** — the potential on the QM atoms with
+   the MM and the QM-image contributions kept apart, and the gradients on the QM and the MM
+   atoms before the QM and the electrostatic halves are added together. Intended for
+   checking the QM/MM electrostatics against an independent calculation.
 
 Everything is driven by environment variables; no `.mdp` option and no `tpr` format change
 is involved. With none of them set, the build behaves exactly like the original code.
@@ -92,6 +96,7 @@ Using it is not mandatory — a hand-built topology works — but the four outpu
 | `src/gromacs/mdlib/qmmm.h` | `qmmmNrexcl`, `qmmmFudgeQQ`, `mmScaleExc`, `qmmmScale`, `localIndexOfAtom`, `qmmmScaleFactor()` |
 | `src/gromacs/mdlib/qmmm.cpp` | `init_QMMM_exclusions()` (BFS over chemical bonds) and `update_QMMM_exclusion_scaling()` (per-step re-mapping onto the short-range MM list) |
 | `src/gromacs/mdlib/qmmm-calculation.cpp` | the scaling factor applied in `calculate_SR_QM_MM()` and `gradient_QM_MM()` for every electrostatic variant, with the reciprocal-space counter-term for PME |
+| `src/gromacs/mdlib/qm_dftbplus.cpp` | `GMX_DFTB_ESP_SPLIT`, `GMX_DFTB_QMMM_GRAD` and `GMX_DFTB_QMMM_GRAD_FULL` in `call_dftbplus()` — output only, alongside the file writers that were already there |
 
 ---
 
@@ -238,13 +243,99 @@ variables that describe the MM environment are ignored when `GMX_QMMM_VARIANT=0`
 | variable | file | content |
 |---|---|---|
 | `GMX_DFTB_CHARGES=N` | `qm_dftb_charges.xvg` | Mulliken charges of the QM atoms, one row per written step |
-| `GMX_DFTB_ESP=N` | `qm_dftb_esp.xvg` | electrostatic potential induced by the MM environment on each QM atom |
+| `GMX_DFTB_ESP=N` | `qm_dftb_esp.xvg` | electrostatic potential on each QM atom, MM and QM images summed |
+| `GMX_DFTB_ESP_SPLIT=N` | `qm_dftb_esp_split.xvg` | the same potential with the two contributions kept apart |
 | `GMX_DFTB_QM_COORD=N` | `qm_dftb_qm.qxyz` | QM coordinates in XYZQ format (x, y, z, charge) |
 | `GMX_DFTB_MM_COORD=N` | `qm_dftb_mm.qxyz` | coordinates and charges of the MM atoms **on the short-range list** |
 | `GMX_DFTB_MM_COORD_FULL=N` | `qm_dftb_mm_full.qxyz` | coordinates and charges of **all** MM atoms |
+| `GMX_DFTB_QMMM_GRAD=N` | `qm_dftb_grad.xvg` | gradients on the QM atoms and on the short-range MM atoms |
+| `GMX_DFTB_QMMM_GRAD_FULL=N` | `qm_dftb_grad_full.xvg` | gradients on **all** MM atoms (PME only) |
 
-`GMX_DFTB_MM_COORD_FULL` on a solvated system writes the whole box every *N* steps — pick a
-large stride. Each variable prints a confirmation line at startup.
+`GMX_DFTB_MM_COORD_FULL` and `GMX_DFTB_QMMM_GRAD_FULL` on a solvated system write the whole
+box every *N* steps — pick a large stride. Each variable prints a confirmation line at
+startup. The stride has to be a positive integer; the three variables added last ignore a
+value of `0` or less instead of dividing by it.
+
+### Splitting the potential on the QM atoms
+
+The external potential that enters the QM Hamiltonian has two sources: the MM point charges,
+and — with PME — the periodic images of the QM charges themselves. They are computed
+separately (`calculate_SR_QM_MM()` plus `calculate_LR_QM_MM()` for the first,
+`calculate_complete_QM_QM()` inside the SCC cycle for the second) and `GMX_DFTB_ESP` writes
+only their sum, which is what the QM calculation feels but not what one wants in order to
+check the MM electrostatics on its own.
+
+`GMX_DFTB_ESP_SPLIT` writes the same quantity into its own file with the two parts side by
+side — one row per written step, the step number followed by three numbers per QM atom, in
+volts:
+
+```
+       0  2.22433  1.07294  3.29727  3.58481  1.07115  4.65596  2.56784 ...
+           |        |        |
+           |        |        the sum, i.e. what qm_dftb_esp.xvg contains
+           |        the periodic images of the QM charges
+           the MM atoms
+```
+
+The second number is identically zero unless `GMX_QMMM_VARIANT=1`, since without PME the
+periodic images are not treated at all. Note that with PME the first number still contains
+the periodic images of the *MM* charges: it is the potential of the MM subsystem under Ewald
+summation, not a minimum-image pair sum. A plain pairwise sum is what the cut-off variants
+(`GMX_QMMM_VARIANT=2,3,4`) produce.
+
+`GMX_DFTB_ESP` is untouched and can be used at the same time.
+
+### Gradients
+
+`GMX_DFTB_QMMM_GRAD` writes the gradients while they are still separated, before the QM
+gradient from DFTB+ and the electrostatic gradient computed by GROMACS are added together.
+Per written step, one block for the QM atoms and one for the MM atoms of the short-range
+list:
+
+```
+QM gradients: DFTB+, electrostatic, total (hartree/bohr) step 0
+QM     1   -0.0420499  -0.0223395   0.0009268    0.0007340  -0.0012573  -0.0017847   -0.0413159  -0.0235968  -0.0008579
+...
+MM gradients on the short-range list (hartree/bohr) step 0
+MM     3        3    0.0000568   0.0026999  -0.0005152
+```
+
+The QM rows carry the running number of the QM atom (the same order as in `qm_dftb_qm.qxyz`
+and `qm_dftb_charges.xvg`) and then three vectors: the gradient returned by DFTB+, the
+electrostatic gradient due to the environment, and their sum, which is what ends up in the
+force array. The MM rows carry the running number on the short-range list **and the global
+atom number** (1-based, as in the `.gro`); that list is rebuilt every step, so only the
+global number is stable.
+
+Everything is in atomic units, hartree/bohr, and these are gradients, not forces — the force
+is the negative of the gradient. Multiply by `HARTREE_BOHR2MD` ≈ 4.96147·10⁴ for kJ/mol/nm.
+
+What the electrostatic column contains depends on the variant. With the cut-off variants it
+is purely the QM–MM interaction, evaluated as an explicit pair sum with the exclusion factors
+of section 1 applied. With PME it also includes **the periodic images of the QM charges** and
+the counter-term that removes the QM–QM interaction inside the central cell, because the
+reciprocal-space part is evaluated for QM and MM charges on one grid and the two are not
+separated afterwards.
+
+`GMX_DFTB_QMMM_GRAD_FULL` adds the gradients on all of the MM atoms, which only exist with
+PME, one row per atom carrying the global atom number:
+
+```
+MM gradients on all MM atoms (hartree/bohr) step 0
+       1    0.0002100   0.0005237  -0.0000451
+```
+
+An MM atom of the short-range list appears in **both** files, and the gradient acting on it
+is the sum of the two entries: the long-range part is evaluated for the whole MM subsystem
+and the short-range correction only for the neighbours of the QM region, exactly as they are
+added to the force array.
+
+Two consistency checks worth running. With `GMX_QMMM_VARIANT=2`, `3` or `4` every
+contribution is added to one atom and subtracted from another in the same loop, so the sum of
+all printed gradients over the QM and the MM block vanishes to round-off; with PME it only
+does so approximately, to the accuracy of the mesh. And the third vector of a QM row must
+equal the sum of the first two, which is the only place where the two halves of the QM/MM
+gradient meet.
 
 ---
 
@@ -304,9 +395,12 @@ and **order** do.
 | `GMX_QMMM_PME_DIPCOR` | mdrun | set/unset | unset (disabled) |
 | `GMX_DFTB_CHARGES` | mdrun | stride in steps | off |
 | `GMX_DFTB_ESP` | mdrun | stride in steps | off |
+| `GMX_DFTB_ESP_SPLIT` | mdrun | stride in steps | off |
 | `GMX_DFTB_QM_COORD` | mdrun | stride in steps | off |
 | `GMX_DFTB_MM_COORD` | mdrun | stride in steps | off |
 | `GMX_DFTB_MM_COORD_FULL` | mdrun | stride in steps | off |
+| `GMX_DFTB_QMMM_GRAD` | mdrun | stride in steps | off |
+| `GMX_DFTB_QMMM_GRAD_FULL` | mdrun | stride in steps | off |
 
 ---
 
