@@ -983,7 +983,7 @@ void gmx_pme_calc_energy(gmx_pme_t* pme, gmx::ArrayRef<const gmx::RVec> x, gmx::
     /* Only calculate the spline coefficients, don't actually spread */
     spread_on_grid(pme, atc, nullptr, TRUE, FALSE, pme->fftgrid[PME_GRID_QA], FALSE, PME_GRID_QA);
 
-    *V = gather_energy_bsplines(pme, grid->grid.grid, atc);
+    *V = gather_energy_bsplines(pme, grid->grid.grid, atc, 0, nullptr);
 }
 
 /*! \brief Calculate initial Lorentz-Berthelot coefficients for LJ-PME */
