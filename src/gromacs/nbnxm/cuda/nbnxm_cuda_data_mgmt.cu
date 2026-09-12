@@ -2,7 +2,7 @@
  * This file is part of the GROMACS molecular simulation package.
  *
  * Copyright (c) 2012,2013,2014,2015,2016 by the GROMACS development team.
- * Copyright (c) 2017,2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2017,2018,2019,2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -124,7 +124,9 @@ static void init_nbparam(NBParamGpu*                     nbp,
                          const nbnxn_atomdata_t::Params& nbatParams,
                          const DeviceContext&            deviceContext)
 {
-    const int ntypes = nbatParams.numTypes;
+    int ntypes;
+
+    ntypes = nbatParams.numTypes;
 
     set_cutoff_parameters(nbp, ic, listParams);
 
@@ -137,19 +139,80 @@ static void init_nbparam(NBParamGpu*                     nbp,
      * combination is rarely used. LJ force-switch with LB rule is more common,
      * but gives only 1% speed-up.
      */
-    nbp->vdwType  = nbnxmGpuPickVdwKernelType(ic, nbatParams.comb_rule);
-    nbp->elecType = nbnxmGpuPickElectrostaticsKernelType(ic);
+    if (ic->vdwtype == evdwCUT)
+    {
+        switch (ic->vdw_modifier)
+        {
+            case eintmodNONE:
+            case eintmodPOTSHIFT:
+                switch (nbatParams.comb_rule)
+                {
+                    case ljcrNONE: nbp->vdwtype = evdwTypeCUT; break;
+                    case ljcrGEOM: nbp->vdwtype = evdwTypeCUTCOMBGEOM; break;
+                    case ljcrLB: nbp->vdwtype = evdwTypeCUTCOMBLB; break;
+                    default:
+                        gmx_incons(
+                                "The requested LJ combination rule is not implemented in the CUDA "
+                                "GPU accelerated kernels!");
+                }
+                break;
+            case eintmodFORCESWITCH: nbp->vdwtype = evdwTypeFSWITCH; break;
+            case eintmodPOTSWITCH: nbp->vdwtype = evdwTypePSWITCH; break;
+            default:
+                gmx_incons(
+                        "The requested VdW interaction modifier is not implemented in the CUDA GPU "
+                        "accelerated kernels!");
+        }
+    }
+    else if (ic->vdwtype == evdwPME)
+    {
+        if (ic->ljpme_comb_rule == ljcrGEOM)
+        {
+            assert(nbatParams.comb_rule == ljcrGEOM);
+            nbp->vdwtype = evdwTypeEWALDGEOM;
+        }
+        else
+        {
+            assert(nbatParams.comb_rule == ljcrLB);
+            nbp->vdwtype = evdwTypeEWALDLB;
+        }
+    }
+    else
+    {
+        gmx_incons(
+                "The requested VdW type is not implemented in the CUDA GPU accelerated kernels!");
+    }
+
+    if (ic->eeltype == eelCUT)
+    {
+        nbp->eeltype = eelTypeCUT;
+    }
+    else if (EEL_RF(ic->eeltype))
+    {
+        nbp->eeltype = eelTypeRF;
+    }
+    else if ((EEL_PME(ic->eeltype) || ic->eeltype == eelEWALD))
+    {
+        nbp->eeltype = nbnxn_gpu_pick_ewald_kernel_type(*ic, deviceContext.deviceInfo());
+    }
+    else
+    {
+        /* Shouldn't happen, as this is checked when choosing Verlet-scheme */
+        gmx_incons(
+                "The requested electrostatics type is not implemented in the CUDA GPU accelerated "
+                "kernels!");
+    }
 
     /* generate table for PME */
     nbp->coulomb_tab = nullptr;
-    if (nbp->elecType == ElecType::EwaldTab || nbp->elecType == ElecType::EwaldTabTwin)
+    if (nbp->eeltype == eelTypeEWALD_TAB || nbp->eeltype == eelTypeEWALD_TAB_TWIN)
     {
         GMX_RELEASE_ASSERT(ic->coulombEwaldTables, "Need valid Coulomb Ewald correction tables");
         init_ewald_coulomb_force_table(*ic->coulombEwaldTables, nbp, deviceContext);
     }
 
     /* set up LJ parameter lookup table */
-    if (!useLjCombRule(nbp->vdwType))
+    if (!useLjCombRule(nbp->vdwtype))
     {
         initParamLookupTable(&nbp->nbfp, &nbp->nbfp_texobj, nbatParams.nbfp.data(),
                              2 * ntypes * ntypes, deviceContext);
@@ -349,7 +412,7 @@ void gpu_init_atomdata(NbnxmGpu* nb, const nbnxn_atomdata_t* nbat)
 
         allocateDeviceBuffer(&d_atdat->f, nalloc, deviceContext);
         allocateDeviceBuffer(&d_atdat->xq, nalloc, deviceContext);
-        if (useLjCombRule(nb->nbparam->vdwType))
+        if (useLjCombRule(nb->nbparam->vdwtype))
         {
             allocateDeviceBuffer(&d_atdat->lj_comb, nalloc, deviceContext);
         }
@@ -371,7 +434,7 @@ void gpu_init_atomdata(NbnxmGpu* nb, const nbnxn_atomdata_t* nbat)
         nbnxn_cuda_clear_f(nb, nalloc);
     }
 
-    if (useLjCombRule(nb->nbparam->vdwType))
+    if (useLjCombRule(nb->nbparam->vdwtype))
     {
         static_assert(sizeof(d_atdat->lj_comb[0]) == sizeof(float2),
                       "Size of the LJ parameters element should be equal to the size of float2.");
@@ -408,7 +471,7 @@ void gpu_free(NbnxmGpu* nb)
     nbparam = nb->nbparam;
 
     if ((!nbparam->coulomb_tab)
-        && (nbparam->elecType == ElecType::EwaldTab || nbparam->elecType == ElecType::EwaldTabTwin))
+        && (nbparam->eeltype == eelTypeEWALD_TAB || nbparam->eeltype == eelTypeEWALD_TAB_TWIN))
     {
         destroyParamLookupTable(&nbparam->coulomb_tab, nbparam->coulomb_tab_texobj);
     }
@@ -420,12 +483,12 @@ void gpu_free(NbnxmGpu* nb)
 
     delete nb->timers;
 
-    if (!useLjCombRule(nb->nbparam->vdwType))
+    if (!useLjCombRule(nb->nbparam->vdwtype))
     {
         destroyParamLookupTable(&nbparam->nbfp, nbparam->nbfp_texobj);
     }
 
-    if (nbparam->vdwType == VdwType::EwaldGeom || nbparam->vdwType == VdwType::EwaldLB)
+    if (nbparam->vdwtype == evdwTypeEWALDGEOM || nbparam->vdwtype == evdwTypeEWALDLB)
     {
         destroyParamLookupTable(&nbparam->nbfp_comb, nbparam->nbfp_comb_texobj);
     }

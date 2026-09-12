@@ -1,7 +1,7 @@
 #
 # This file is part of the GROMACS molecular simulation package.
 #
-# Copyright (c) 2019,2020, by the GROMACS development team, led by
+# Copyright (c) 2019,2020,2021, by the GROMACS development team, led by
 # Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
 # and including many others, as listed in the AUTHORS file in the
 # top-level source directory and at http://www.gromacs.org.
@@ -49,6 +49,10 @@
 # directory with some artifacts.
 
 import os
+
+# Import setuptools early to avoid UserWarning from Distutils.
+# Ref: https://gitlab.com/gromacs/gromacs/-/issues/3715
+import setuptools
 
 # Allow setup.py to be run when scikit-build is not installed, such as to
 # produce source distribution archives with `python setup.py sdist`
@@ -101,11 +105,13 @@ if gmxapi_DIR is None:
     # Infer from GMXRC exports, if available.
     gmxapi_DIR = os.getenv('GROMACS_DIR')
 
+
 def _find_first_gromacs_suffix(directory):
     dir_contents = os.listdir(directory)
     for entry in dir_contents:
         if entry.startswith('gromacs'):
             return entry.strip('gromacs')
+
 
 if gmx_toolchain_dir is None:
     # Try to guess from standard GMXRC environment variables.
@@ -151,11 +157,22 @@ cmake_platform_hints = '-DCMAKE_TOOLCHAIN_FILE={}'.format(gmx_toolchain)
 cmake_gmxapi_hint = '-Dgmxapi_ROOT={}'.format(gmxapi_DIR)
 cmake_args = [cmake_platform_hints, cmake_gmxapi_hint]
 
+long_description = """gmxapi provides Python access to GROMACS molecular simulation tools.
+Operations can be connected flexibly to allow high performance simulation and
+analysis with complex control and data flows. Users can define new operations
+in C++ or Python with the same tool kit used to implement this package.
+
+This Python package requires a compatible GROMACS installation with the API
+libraries and headers.
+
+See http://gmxapi.org/ for details on installation and usage.
+"""
+
 setup(
     name='gmxapi',
 
     # TODO: single-source version information (currently repeated in gmxapi/version.py and CMakeLists.txt)
-    version='0.3.0a1',
+    version='0.2.3',
     python_requires='>=3.6',
     install_requires=['networkx>=2.0',
                       'numpy>=1'],
@@ -168,6 +185,7 @@ setup(
     author='M. Eric Irrgang',
     author_email='info@gmxapi.org',
     description='gmxapi Python interface for GROMACS',
+    long_description=long_description,
     license='LGPL',
     url='http://gmxapi.org/',
 

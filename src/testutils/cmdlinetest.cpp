@@ -42,7 +42,7 @@
  */
 #include "gmxpre.h"
 
-#include "testutils/cmdlinetest.h"
+#include "cmdlinetest.h"
 
 #include <cstdlib>
 #include <cstring>

@@ -60,8 +60,7 @@ logger.info('Importing {}'.format(__name__))
 #    * provides `output` publishing proxy to the inner function and
 #    * produce a result with attributes for
 #       * file: mapping of output flags to output filenames
-#       * stdout: process STDOUT
-#       * stderr: porcess STDERR
+#       * erroroutput: text results in case of error
 #       * returncode: integer return code of wrapped command
 #
 # Note that the existence of the 'file' output map is expressed here, but
@@ -71,9 +70,7 @@ logger.info('Importing {}'.format(__name__))
 #
 # TODO: Operation returns the output object when called with the shorter signature.
 #
-@gmx.function_wrapper(output={'stdout': str,
-                              'stderr': str,
-                              'returncode': int})
+@gmx.function_wrapper(output={'erroroutput': str, 'returncode': int})
 def cli(command: NDArray, shell: bool, output: OutputCollectionDescription, stdin: str = ''):
     """Execute a command line program in a subprocess.
 
@@ -120,21 +117,23 @@ def cli(command: NDArray, shell: bool, output: OutputCollectionDescription, stdi
             >>> my_filename = "somefilename"
             >>> result = cli(('exe', '--origin', 1.0, 2.0, 3.0, '-f', my_filename), shell=False)
             >>> assert hasattr(result, 'file')
-            >>> assert hasattr(result, 'stdout')
-            >>> assert hasattr(result, 'stderr')
+            >>> assert hasattr(result, 'erroroutput')
             >>> assert hasattr(result, 'returncode')
 
     Returns:
-        A data structure with attributes for each of the results `file`, `stdout`, `stderr`, and `returncode`
+        A data structure with attributes for each of the results `file`, `erroroutput`, and `returncode`
 
     Result object attributes:
         * `file`: the mapping of CLI flags to filename strings resulting from the `output` kwarg
-        * `stdout`: A string mapping from process STDOUT.
-        * `stderr`: A string mapping from process STDERR; it will be the
-                    error output (if any) if the process failed.
+        * `erroroutput`: A string of error output (if any) if the process failed.
         * `returncode`: return code of the subprocess.
 
     """
+    # Note: we could make provisions for stdio filehandles in a future version. E.g.
+    # * STDOUT is available if a consuming operation is bound to `output.stdout`.
+    # * STDERR is available if a consuming operation is bound to `output.stderr`.
+    # * Otherwise, STDOUT and/or STDERR is(are) closed when command is called.
+
     # In the operation implementation, we expect the `shell` parameter to be intercepted by the
     # wrapper and set to False.
     if shell:
@@ -155,8 +154,7 @@ def cli(command: NDArray, shell: bool, output: OutputCollectionDescription, stdi
     # TODO: (FR9) Can OS input/output filehandles be a responsibility of
     #  the code providing 'resources'?
 
-    stdout = ''
-    stderr = ''
+    erroroutput = ''
     logger.debug('executing subprocess')
     try:
         completed_process = subprocess.run(command,
@@ -164,38 +162,20 @@ def cli(command: NDArray, shell: bool, output: OutputCollectionDescription, stdi
                                            input=stdin,
                                            check=True,
                                            stdout=subprocess.PIPE,
-                                           stderr=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT,
                                            encoding='utf-8',
                                            universal_newlines=True
                                            )
         returncode = completed_process.returncode
         # TODO: Resource management code should manage a safe data object for `output`.
-        logger.debug('STDOUT:')
-        if completed_process.stderr is not None:
-            for line in completed_process.stdout.split('\n'):
-                logger.debug(line)
-        else:
-            logger.debug('STDOUT is empty')
-        logger.debug('STDERR:')
-        if completed_process.stderr is not None:
-            for line in completed_process.stderr.split('\n'):
-                logger.debug(line)
-        else:
-            logger.debug('STDERR is empty')
-
-        stdout = completed_process.stdout
-        stderr = completed_process.stderr
-
+        for line in completed_process.stdout.split('\n'):
+            logger.debug(line)
     except subprocess.CalledProcessError as e:
-        logger.info("commandline operation had non-zero return status"
-                    "when calling {}".format(e.cmd))
-        stdout = e.stdout
-        stderr = e.stderr
+        logger.info("commandline operation had non-zero return status when calling {}".format(e.cmd))
+        erroroutput = e.output
         returncode = e.returncode
-
     # Publish outputs.
-    output.stdout = stdout
-    output.stderr = stderr
+    output.erroroutput = erroroutput
     output.returncode = returncode
 
 
@@ -273,9 +253,7 @@ def commandline_operation(executable=None,
         The output node of the resulting operation handle contains
 
         * ``file``: the mapping of CLI flags to filename strings resulting from the ``output_files`` kwarg
-        * ``stdout``: A string mapping from process STDOUT.
-        * ``stderr``: A string mapping from process STDERR; it will be the
-                      error output (if any) if the process failed.
+        * ``erroroutput``: A string of error output (if any) if the process failed.
         * ``returncode``: return code of the subprocess.
 
     """
@@ -306,23 +284,15 @@ def commandline_operation(executable=None,
     #
     # TODO: (FR4+) Characterize the `file` dictionary key type:
     #  explicitly sequences rather than maybe-string/maybe-sequence-of-strings
-    @gmx.function_wrapper(output={'stdout': str,
-                                  'stderr': str,
-                                  'returncode': int,
-                                  'file': dict})
-    def merged_ops(stdout: str = None,
-                   stderr: str = None,
-                   returncode: int = None,
-                   file: dict = None,
+    @gmx.function_wrapper(output={'erroroutput': str, 'returncode': int, 'file': dict})
+    def merged_ops(erroroutput: str = None, returncode: int = None, file: dict = None,
                    output: OutputCollectionDescription = None):
-        assert stdout is not None
-        assert stderr is not None
+        assert erroroutput is not None
         assert returncode is not None
         assert file is not None
         assert output is not None
         output.returncode = returncode
-        output.stdout = stdout
-        output.stderr = stderr
+        output.erroroutput = erroroutput
         if returncode == 0:
             output.file = file
         else:
@@ -358,8 +328,7 @@ def commandline_operation(executable=None,
     # TODO: ``label`` kwarg
     # TODO: input fingerprinting
     cli_result = cli(**cli_args)
-    merged_result = merged_ops(stdout=cli_result.output.stdout,
-                               stderr=cli_result.output.stderr,
+    merged_result = merged_ops(erroroutput=cli_result.output.erroroutput,
                                returncode=cli_result.output.returncode,
                                file=output_files,
                                **kwargs)

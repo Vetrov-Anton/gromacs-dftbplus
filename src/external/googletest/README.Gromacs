@@ -2,7 +2,8 @@ This directory contains source code for Google C++ Testing and Mocking
 Frameworks.
 
 The code has been copied nearly verbatim from the GoogleTest 1.8.1
-git tag by copying the following files/directories recursively:
+git tag (also used in python_packaging/sample_restraint/tests/CMakeLists.txt)
+by copying the following files/directories recursively:
 
 README.md
 googletest
@@ -59,3 +60,10 @@ such as for the clang static analyzer, and some lines are removed
 from consideration by wrapping with `#ifndef __clang_analyzer__`
 or marking them with `/*NOLINT*/` comment.
 ... `#endif`.
+
+GoogleTest declares quite old minimum CMake versions, which newer
+CMake versions warn about. In practice, the CMake version requirement
+for GROMACS is greater than these minimums, and that version will be
+used for GoogleTest also. The warnings aren't useful for GROMACS
+developers, so those declarations by GoogleTest have been commented
+out.

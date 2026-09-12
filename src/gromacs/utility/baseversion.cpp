@@ -1,7 +1,7 @@
 /*
  * This file is part of the GROMACS molecular simulation package.
  *
- * Copyright (c) 2014,2015,2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2014,2015,2018,2019,2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -62,16 +62,6 @@ const char* gmxDOI()
     return gmxSourceDoiString;
 }
 
-const char* gmxReleaseSourceChecksum()
-{
-    return gmxReleaseSourceFileChecksum;
-}
-
-const char* gmxCurrentSourceChecksum()
-{
-    return gmxCurrentSourceFileChecksum;
-}
-
 #if GMX_DOUBLE
 void gmx_is_double_precision() {}
 #else
@@ -97,6 +87,7 @@ const char* getGpuImplementationString()
         else
         {
             GMX_RELEASE_ASSERT(false, "Unknown GPU configuration");
+            return "impossible";
         }
     }
     else

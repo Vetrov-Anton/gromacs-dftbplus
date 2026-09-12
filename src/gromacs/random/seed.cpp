@@ -1,7 +1,7 @@
 /*
  * This file is part of the GROMACS molecular simulation package.
  *
- * Copyright (c) 2015,2016,2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2015,2016,2018,2019,2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -37,7 +37,7 @@
 
 #include "seed.h"
 
-#include <time.h>
+#include <chrono>
 
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
@@ -55,24 +55,39 @@ namespace gmx
  */
 static bool checkIfRandomDeviceIsFunctional()
 {
-    std::random_device rd;
-
-    uint64_t randomNumber1 = static_cast<uint64_t>(rd());
-    uint64_t randomNumber2 = static_cast<uint64_t>(rd());
-
-    // Due to a bug in AMD Ryzen microcode, RDRAND may always return -1 (0xFFFFFFFF).
-    // To avoid that, fall back to using PRNG instead of RDRAND if this happens.
-    if (randomNumber1 == 0xFFFFFFFF && randomNumber2 == 0xFFFFFFFF)
+    try
     {
+        std::random_device rd;
+
+        uint64_t randomNumber1 = static_cast<uint64_t>(rd());
+        uint64_t randomNumber2 = static_cast<uint64_t>(rd());
+
+        // Due to a bug in AMD Ryzen microcode, RDRAND may always return -1 (0xFFFFFFFF).
+        // To avoid that, fall back to using PRNG instead of RDRAND if this happens.
+        if (randomNumber1 == 0xFFFFFFFF && randomNumber2 == 0xFFFFFFFF)
+        {
+            if (debug)
+            {
+                fprintf(debug,
+                        "Hardware random number generator (RDRAND) returned -1 (0xFFFFFFFF) twice "
+                        "in\na row. This may be due to a known bug in AMD Ryzen microcode.");
+            }
+            return false;
+        }
+        return true;
+    }
+    catch (const std::exception& exception)
+    {
+        // std::random_device ctor can throw implementation-defined exceptions
         if (debug)
         {
             fprintf(debug,
-                    "Hardware random number generator (RDRAND) returned -1 (0xFFFFFFFF) twice in\n"
-                    "a row. This may be due to a known bug in AMD Ryzen microcode.");
+                    "Hardware random number generator could not be initialized: %s.\nThis may be "
+                    "due to a known bug in AMD Ryzen microcode.",
+                    exception.what());
         }
         return false;
     }
-    return true;
 }
 
 /*! \brief Get the next pure or pseudo-random number
@@ -111,7 +126,10 @@ uint64_t makeRandomSeed()
     }
     else
     {
-        std::mt19937_64 prng(time(nullptr));
+        int64_t microsecondsSinceEpoch = std::chrono::duration_cast<std::chrono::microseconds>(
+                                                 std::chrono::system_clock::now().time_since_epoch())
+                                                 .count();
+        std::mt19937_64 prng(microsecondsSinceEpoch);
         return makeRandomSeedInternal(prng);
     }
 }

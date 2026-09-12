@@ -38,8 +38,6 @@
 #include <memory>
 #include <string>
 
-#include "gromacs/selection/indexutil.h"
-
 namespace gmx
 {
 

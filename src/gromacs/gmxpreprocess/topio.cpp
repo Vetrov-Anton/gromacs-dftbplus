@@ -4,7 +4,7 @@
  * Copyright (c) 1991-2000, University of Groningen, The Netherlands.
  * Copyright (c) 2001-2004, The GROMACS development team.
  * Copyright (c) 2013,2014,2015,2016,2017 by the GROMACS development team.
- * Copyright (c) 2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2018,2019,2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -48,7 +48,6 @@
 #include <cstring>
 
 #include <algorithm>
-#include <array>
 #include <memory>
 #include <unordered_set>
 
@@ -749,6 +748,7 @@ static char** read_topol(const char*                           infile,
                                       pline, FALSE, FALSE, 1.0, bZero, &bWarn_copy_A_B, wi);
                             break;
 
+                        case Directive::d_vsites1:
                         case Directive::d_vsites2:
                         case Directive::d_vsites3:
                         case Directive::d_vsites4:
@@ -1348,14 +1348,6 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
                 qmexcl.a[qm_nr + k + j] = link_arr[k];
             }
             j += (qm_nr + link_nr);
-        }
-        if (blink[i])
-        {
-            for (int k = 0; k < qm_nr; k++)
-            {
-                qmexcl.a[k + j] = qm_arr[k];
-            }
-            j += qm_nr;
         }
     }
     qmexcl.index[qmexcl.nr] = j;

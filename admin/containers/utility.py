@@ -1,7 +1,7 @@
 #
 # This file is part of the GROMACS molecular simulation package.
 #
-# Copyright (c) 2020, by the GROMACS development team, led by
+# Copyright (c) 2020,2021, by the GROMACS development team, led by
 # Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
 # and including many others, as listed in the AUTHORS file in the
 # top-level source directory and at http://www.gromacs.org.
@@ -104,7 +104,7 @@ compiler_group.add_argument('--icc', type=int, nargs='?', const=19, default=None
 # oneAPI makes an official release. Also, the resulting container is a mix
 # of packages with different betaXY version numbers, which hopefully works and
 # is what Intel intends...
-compiler_group.add_argument('--oneapi', type=str, nargs='?', const="2021.1-beta09", default=None,
+compiler_group.add_argument('--oneapi', type=str, nargs='?', const="2021.1.1", default=None,
                             help='Select Intel oneAPI package version.')
 
 linux_group = parser.add_mutually_exclusive_group()
@@ -130,7 +130,7 @@ parser.add_argument('--doxygen', type=str, nargs='?', const='1.8.5', default=Non
                     help='Add doxygen environment for documentation builds. Also adds other requirements needed for final docs images.')
 
 # Supported Python versions for maintained branches.
-_python_versions = ['3.6.10', '3.7.7', '3.8.2']
+_python_versions = ['3.6.10', '3.7.7', '3.8.2', '3.9.1']
 parser.add_argument('--venvs', nargs='*', type=str, default=_python_versions,
                     help='List of Python versions ("major.minor.patch") for which to install venvs. '
                          'Default: {}'.format(' '.join(_python_versions)))

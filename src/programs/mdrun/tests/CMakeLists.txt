@@ -47,7 +47,6 @@ gmx_add_unit_test_library(mdrun_test_infrastructure
     $<TARGET_OBJECTS:mdrun_objlib>
     )
 target_include_directories(mdrun_test_infrastructure SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/src/external)
-target_link_libraries(mdrun_test_infrastructure PUBLIC legacy_api)
 
 # To avoid running into test timeouts, some end-to-end tests of mdrun
 # functionality are split off. This can be rearranged in future as we
@@ -86,6 +85,7 @@ set(exename "mdrun-io-test")
 
 gmx_add_gtest_executable(${exename}
     CPP_SOURCE_FILES
+        checkpoint.cpp
         exactcontinuation.cpp
         grompp.cpp
         initialconstraints.cpp
@@ -107,7 +107,6 @@ gmx_add_gtest_executable(${exename}
         ewaldsurfaceterm.cpp
         multiple_time_stepping.cpp
         orires.cpp
-        simulator.cpp
         swapcoords.cpp
         tabulated_bonded_interactions.cpp
         # pseudo-library for code for mdrun
@@ -231,6 +230,18 @@ gmx_add_gtest_executable(${exename}
         $<TARGET_OBJECTS:mdrun_objlib>
 )
 target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
-# TODO: Link specific modules: topology
-target_link_libraries(${exename} PRIVATE legacy_modules)
+gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS)
+
+# End-to-end tests comparing different simulator code paths
+set(testname "MdrunSimulatorComparison")
+set(exename "mdrun-simulator-comparison-test")
+
+gmx_add_gtest_executable(${exename}
+        CPP_SOURCE_FILES
+        # files with code for tests
+        simulator.cpp
+        # pseudo-library for code for mdrun
+        $<TARGET_OBJECTS:mdrun_objlib>
+        )
+target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
 gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS)

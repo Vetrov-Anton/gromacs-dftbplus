@@ -1,7 +1,8 @@
 /*
  * This file is part of the GROMACS molecular simulation package.
  *
- * Copyright (c) 2016,2017,2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2016,2017,2018,2019,2020 by the GROMACS development team.
+ * Copyright (c) 2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -427,7 +428,7 @@ void pmePerformGather(gmx_pme_t* pme, CodePath mode, ForcesVector& forces)
             }
             copy_fftgrid_to_pmegrid(pme, fftgrid[gridIndex], pmegrid, gridIndex, pme->nthread, threadIndex);
             unwrap_periodic_pmegrid(pme, pmegrid);
-            gather_f_bsplines(pme, pmegrid, true, atc, &atc->spline[threadIndex], scale, FALSE, 0, FALSE);
+            gather_f_bsplines(pme, pmegrid, true, atc, &atc->spline[threadIndex], scale);
             break;
 
 /* The compiler will complain about passing fftgrid (converting double ** to float **) if using
@@ -888,7 +889,7 @@ const char* codePathToString(CodePath codePath)
 PmeTestHardwareContext::PmeTestHardwareContext() : codePath_(CodePath::CPU) {}
 
 PmeTestHardwareContext::PmeTestHardwareContext(TestDevice* testDevice) :
-    codePath_(CodePath::CPU),
+    codePath_(CodePath::GPU),
     testDevice_(testDevice)
 {
     setActiveDevice(testDevice_->deviceInfo());

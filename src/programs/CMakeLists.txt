@@ -41,33 +41,26 @@ target_compile_definitions(mdrun_objlib PRIVATE HAVE_CONFIG_H)
 target_include_directories(mdrun_objlib SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/thread_mpi/include)
 # Should be possible to remove this when resolving #3290
 target_include_directories(mdrun_objlib SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/src/external)
-target_link_libraries(mdrun_objlib PRIVATE common)
-target_link_libraries(mdrun_objlib PRIVATE legacy_api)
-# TODO: Explicitly link specific modules.
-target_link_libraries(mdrun_objlib PRIVATE legacy_modules)
 
 if(GMX_FAHCORE)
     # The lack of a real source file here alongside the object library
     # may break some generators, according to CMake documentation. If
     # so, we can consider adding some dummy file to make it work.
     add_library(fahcore $<TARGET_OBJECTS:mdrun_objlib>)
-    target_link_libraries(fahcore PRIVATE ${GMX_COMMON_LIBRARIES} legacy_api)
+    target_link_libraries(fahcore PRIVATE ${GMX_COMMON_LIBRARIES})
 elseif(GMX_BUILD_MDRUN_ONLY)
-    add_executable(mdrun-only $<TARGET_OBJECTS:mdrun_objlib> mdrun_main.cpp)
-    gmx_target_compile_options(mdrun-only)
-    target_include_directories(mdrun-only SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/thread_mpi/include)
-    target_compile_definitions(mdrun-only PRIVATE HAVE_CONFIG_H)
-    target_link_libraries(mdrun-only PRIVATE
-                          common
-                          legacy_modules
-                          libgromacs
-                          ${GMX_COMMON_LIBRARIES}
-                          ${GMX_EXE_LINKER_FLAGS}
-                          )
+    message(STATUS "The mdrun-only build is deprecated")
+    add_executable(mdrun $<TARGET_OBJECTS:mdrun_objlib> mdrun_main.cpp)
+    gmx_target_compile_options(mdrun)
+    target_include_directories(mdrun SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/thread_mpi/include)
+    target_compile_definitions(mdrun PRIVATE HAVE_CONFIG_H)
+    target_link_libraries(mdrun libgromacs
+        ${GMX_COMMON_LIBRARIES}
+        ${GMX_EXE_LINKER_FLAGS})
     set(BINARY_NAME "mdrun${GMX_BINARY_SUFFIX}")
-    set_target_properties(mdrun-only PROPERTIES
+    set_target_properties(mdrun PROPERTIES
         OUTPUT_NAME "${BINARY_NAME}")
-    install(TARGETS mdrun-only DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT mdrun-only)
+    install(TARGETS mdrun DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT mdrun)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/gmx-completion-${BINARY_NAME}.bash
          "complete -o nospace -F _gmx_mdrun_compl ${BINARY_NAME}")
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/gmx-completion-${BINARY_NAME}.bash
@@ -83,13 +76,7 @@ else()
     gmx_target_compile_options(view_objlib)
     target_compile_definitions(view_objlib PRIVATE HAVE_CONFIG_H)
     target_include_directories(view_objlib SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/src/external)
-    target_link_libraries(view_objlib PRIVATE common legacy_api)
-    # TODO: Explicitly link specific modules.
-    target_link_libraries(view_objlib PRIVATE legacy_modules)
     add_library(gmx_objlib OBJECT ${GMX_MAIN_SOURCES})
-    target_link_libraries(gmx_objlib PRIVATE common legacy_api)
-    # TODO: Explicitly link specific modules.
-    target_link_libraries(gmx_objlib PRIVATE legacy_modules)
     target_include_directories(gmx_objlib SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/src/external)
     target_include_directories(gmx_objlib SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/thread_mpi/include)
     add_executable(gmx
@@ -99,11 +86,9 @@ else()
     add_executable(Gromacs::gmx ALIAS gmx)
     gmx_target_compile_options(gmx)
     target_compile_definitions(gmx PRIVATE HAVE_CONFIG_H)
-    target_link_libraries(gmx PRIVATE
-                          common
-                          libgromacs
-                          ${GMX_COMMON_LIBRARIES}
-                          ${GMX_EXE_LINKER_FLAGS})
+    target_link_libraries(gmx libgromacs
+        ${GMX_COMMON_LIBRARIES}
+        ${GMX_EXE_LINKER_FLAGS})
     if(GMX_X11)
         target_link_libraries(gmx ${X11_LIBRARIES})
     endif()

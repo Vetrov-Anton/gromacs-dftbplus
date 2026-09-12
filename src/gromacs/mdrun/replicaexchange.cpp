@@ -70,14 +70,6 @@
 #include "gromacs/utility/pleasecite.h"
 #include "gromacs/utility/smalloc.h"
 
-/* PLUMED */
-#if (GMX_PLUMED)
-#include "../../../Plumed.h"
-extern int    plumedswitch;
-extern plumed plumedmain;
-#endif
-/* END PLUMED */
-
 //! Helps cut off probability values.
 constexpr int c_probabilityCutoff = 100;
 
@@ -178,10 +170,6 @@ static gmx_bool repl_quantity(const gmx_multisim_t* ms, struct gmx_repl_ex* re, 
     qall[re->repl] = q;
     gmx_sum_sim(ms->numSimulations_, qall, ms);
 
-    /* PLUMED */
-#if (GMX_PLUMED)
-    bDiff = TRUE;
-#else
     bDiff = FALSE;
     for (s = 1; s < ms->numSimulations_; s++)
     {
@@ -190,8 +178,6 @@ static gmx_bool repl_quantity(const gmx_multisim_t* ms, struct gmx_repl_ex* re, 
             bDiff = TRUE;
         }
     }
-#endif
-    /* END PLUMED */
 
     if (bDiff)
     {
@@ -360,12 +346,6 @@ gmx_repl_ex_t init_replica_exchange(FILE*                            fplog,
         re->ind[i] = i;
     }
 
-     /* PLUMED */
-#if (GMX_PLUMED)
-     // plumed2: check if we want alternative patterns (i.e. for bias-exchange metaD)
-     // in those cases replicas can share the same temperature.
-     // THIS BLOCK IS REMOVED WITH Plumed!
-#else
     if (re->type < ereENDSINGLE)
     {
 
@@ -392,8 +372,6 @@ gmx_repl_ex_t init_replica_exchange(FILE*                            fplog,
             }
         }
     }
-#endif
-    /* END PLUMED */
 
     /* keep track of all the swaps, starting with the initial placement. */
     snew(re->allswaps, re->nrepl);
@@ -970,13 +948,6 @@ static void test_for_replica_exchange(FILE*                 fplog,
 
     rng.restart(step, 0);
 
-    /* PLUMED */
-#if (GMX_PLUMED)
-    int plumed_test_exchange_pattern=0;
-  //if(plumed_test_exchange_pattern && plumed_hrex) gmx_fatal(FARGS,"hrex not compatible with ad hoc exchange patterns");
-#endif
-    /* END PLUMED */
-
     if (bMultiEx)
     {
         /* multiple random switch exchange */
@@ -1057,35 +1028,6 @@ static void test_for_replica_exchange(FILE*                 fplog,
         /* standard nearest neighbor replica exchange */
 
         m = (step / re->nst) % 2;
-
-        /* PLUMED */
-#if (GMX_PLUMED)
-        if(plumedswitch){
-          int partner=re->repl;
-          plumed_cmd(plumedmain,"getExchangesFlag",&plumed_test_exchange_pattern);
-          if(plumed_test_exchange_pattern>0){
-            int *list;
-            snew(list,re->nrepl);
-            plumed_cmd(plumedmain,"setNumberOfReplicas",&(re->nrepl));
-            plumed_cmd(plumedmain,"getExchangesList",list);
-            for(i=0; i<re->nrepl; i++) re->ind[i]=list[i];
-            sfree(list);
-          }
-
-          for(i=1; i<re->nrepl; i++) {
-            if (i % 2 != m) continue;
-            a = re->ind[i-1];
-            b = re->ind[i];
-            if(re->repl==a) partner=b;
-            if(re->repl==b) partner=a;
-          }
-          plumed_cmd(plumedmain,"GREX setPartner",&partner);
-          plumed_cmd(plumedmain,"GREX calculate",NULL);
-          plumed_cmd(plumedmain,"GREX shareAllDeltaBias",NULL);
-        }
-#endif
-        /* END PLUMED */
-
         for (i = 1; i < re->nrepl; i++)
         {
             a = re->ind[i - 1];
@@ -1095,22 +1037,6 @@ static void test_for_replica_exchange(FILE*                 fplog,
             if (i % 2 == m)
             {
                 delta = calc_delta(fplog, bPrint, re, a, b, a, b);
-
-                /* PLUMED */
-#if (GMX_PLUMED)
-                if(plumedswitch){
-                  real adb,bdb,dplumed;
-                  char buf[300];
-                  sprintf(buf,"GREX getDeltaBias %d",a); plumed_cmd(plumedmain,buf,&adb);
-                  sprintf(buf,"GREX getDeltaBias %d",b); plumed_cmd(plumedmain,buf,&bdb);
-                  dplumed=adb*re->beta[a]+bdb*re->beta[b];
-                  delta+=dplumed;
-                  if (bPrint)
-                    fprintf(fplog,"dplumed = %10.3e  dE_Term = %10.3e (kT)\n",dplumed,delta);
-                }
-#endif
-                /* END PLUMED */
-
                 if (delta <= 0)
                 {
                     /* accepted */
@@ -1137,30 +1063,11 @@ static void test_for_replica_exchange(FILE*                 fplog,
 
                 if (bEx[i])
                 {
-#if (GMX_PLUMED)
-                    /* PLUMED */
-                    if(!plumed_test_exchange_pattern) {
-                        /* standard neighbour swapping */
-                        /* swap these two */
-                        tmp       = pind[i - 1];
-                        pind[i - 1] = pind[i];
-                        pind[i]   = tmp;
-                        re->nexchange[i]++; /* statistics for back compatibility */
-                    } else {
-                        /* alternative swapping patterns */
-                        tmp       = pind[a];
-                        pind[a]   = pind[b];
-                        pind[b]   = tmp;
-                        re->nexchange[i]++; /* statistics for back compatibility */
-                    }
-                    /* END PLUMED */
-#else
                     /* swap these two */
                     tmp         = pind[i - 1];
                     pind[i - 1] = pind[i];
                     pind[i]     = tmp;
                     re->nexchange[i]++; /* statistics for back compatibility */
-#endif
                 }
             }
             else
@@ -1175,17 +1082,6 @@ static void test_for_replica_exchange(FILE*                 fplog,
         fprintf(fplog, "\n");
         re->nattempt[m]++;
     }
-
-    /* PLUMED */
-#if (GMX_PLUMED)
-    if(plumed_test_exchange_pattern>0) {
-      for (i = 0; i < re->nrepl; i++)
-      {
-          re->ind[i] = i;
-      }
-    }
-#endif
-    /* END PLUMED */
 
     /* record which moves were made and accepted */
     for (i = 0; i < re->nrepl; i++)
@@ -1368,12 +1264,6 @@ gmx_bool replica_exchange(FILE*                 fplog,
     /* Where each replica ends up after the exchange attempt(s). */
     /* The order in which multiple exchanges will occur. */
     gmx_bool bThisReplicaExchanged = FALSE;
-
-    /* PLUMED */
-#if (GMX_PLUMED)
-    if(plumedswitch)plumed_cmd(plumedmain,"GREX prepare",NULL);
-#endif
-    /* END PLUMED */
 
     if (MASTER(cr))
     {

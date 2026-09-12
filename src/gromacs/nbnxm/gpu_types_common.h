@@ -1,7 +1,7 @@
 /*
  * This file is part of the GROMACS molecular simulation package.
  *
- * Copyright (c) 2017,2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2017,2018,2019,2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -47,7 +47,6 @@
 #include "gromacs/mdtypes/locality.h"
 #include "gromacs/utility/enumerationhelpers.h"
 
-#include "nbnxm.h"
 #include "pairlist.h"
 
 #if GMX_GPU_OPENCL
@@ -64,10 +63,10 @@
 struct NBParamGpu
 {
 
-    //! type of electrostatics
-    enum Nbnxm::ElecType elecType;
-    //! type of VdW impl.
-    enum Nbnxm::VdwType vdwType;
+    //! type of electrostatics, takes values from #eelType
+    int eeltype;
+    //! type of VdW impl., takes values from #evdwType
+    int vdwtype;
 
     //! charge multiplication factor
     float epsfac;
@@ -212,11 +211,11 @@ struct gpu_plist
     int excl_nalloc;
 
     /* parameter+variables for normal and rolling pruning */
-    //! true after search, indictes that initial pruning with outer prunning is needed
+    //! true after search, indicates that initial pruning with outer pruning is needed
     bool haveFreshList;
-    //! the number of parts/steps over which one cyle of roling pruning takes places
+    //! the number of parts/steps over which one cycle of rolling pruning takes places
     int rollingPruningNumParts;
-    //! the next part to which the roling pruning needs to be applied
+    //! the next part to which the rolling pruning needs to be applied
     int rollingPruningPart;
 };
 

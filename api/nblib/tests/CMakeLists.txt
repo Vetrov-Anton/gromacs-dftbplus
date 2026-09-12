@@ -46,9 +46,6 @@ gmx_add_unit_test_library(nblib_test_infrastructure
     )
 target_include_directories(nblib_test_infrastructure PRIVATE ${PROJECT_SOURCE_DIR}/api)
 target_include_directories(nblib_test_infrastructure SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/src/external)
-target_link_libraries(nblib_test_infrastructure PRIVATE legacy_api)
-# TODO: Explicitly link specific modules: math,
-target_link_libraries(nblib_test_infrastructure PRIVATE legacy_modules)
 
 set(testname "NbLibSetupTests")
 set(exename "nblib-setup-test")
@@ -67,7 +64,7 @@ gmx_add_gtest_executable(
 target_link_libraries(${exename} PRIVATE nblib_test_infrastructure nblib)
 target_include_directories(${exename} PRIVATE ${PROJECT_SOURCE_DIR}/api)
 gmx_register_gtest_test(${testname} ${exename} INTEGRATION_TEST)
-add_dependencies(check-nblib ${exename})
+add_dependencies(nblib-tests ${exename})
 
 set(testname "NbLibIntegrationTests")
 set(exename "nblib-integration-test")
@@ -84,7 +81,7 @@ gmx_add_gtest_executable(
 target_link_libraries(${exename} PRIVATE nblib_test_infrastructure nblib)
 target_include_directories(${exename} PRIVATE ${PROJECT_SOURCE_DIR}/api)
 gmx_register_gtest_test(${testname} ${exename} INTEGRATION_TEST)
-add_dependencies(check-nblib ${exename})
+add_dependencies(nblib-tests ${exename})
 
 # The integrator sometimes times out on TSAN so it gets its own test harness
 set(testname "NbLibIntegratorTests")
@@ -98,5 +95,5 @@ gmx_add_gtest_executable(
 target_link_libraries(${exename} PRIVATE nblib_test_infrastructure nblib)
 target_include_directories(${exename} PRIVATE ${PROJECT_SOURCE_DIR}/api)
 gmx_register_gtest_test(${testname} ${exename} INTEGRATION_TEST)
-add_dependencies(check-nblib ${exename})
+add_dependencies(nblib-tests ${exename})
 

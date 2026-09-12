@@ -3,7 +3,7 @@
  *
  * Copyright (c) 1991-2000, University of Groningen, The Netherlands.
  * Copyright (c) 2001-2004, The GROMACS development team.
- * Copyright (c) 2011-2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2011-2019,2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -171,14 +171,6 @@
 #include "membedholder.h"
 #include "replicaexchange.h"
 #include "simulatorbuilder.h"
-
-/* PLUMED */
-#if (GMX_PLUMED)
-#include "../../../Plumed.h"
-extern int    plumedswitch;
-extern plumed plumedmain;
-#endif
-/* END PLUMED */
 
 namespace gmx
 {
@@ -823,8 +815,8 @@ int Mdrunner::mdrunner()
                     gpuAccelerationOfNonbondedIsUseful(mdlog, *inputrec, GMX_THREAD_MPI),
                     hw_opt.nthreads_tmpi);
             useGpuForPme = decideWhetherToUseGpusForPmeWithThreadMpi(
-                    useGpuForNonbonded, pmeTarget, numDevicesToUse, userGpuTaskAssignment, *hwinfo_,
-                    *inputrec, hw_opt.nthreads_tmpi, domdecOptions.numPmeRanks);
+                    useGpuForNonbonded, pmeTarget, pmeFftTarget, numDevicesToUse, userGpuTaskAssignment,
+                    *hwinfo_, *inputrec, hw_opt.nthreads_tmpi, domdecOptions.numPmeRanks);
         }
         GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
 
@@ -843,8 +835,7 @@ int Mdrunner::mdrunner()
         // master and spawned threads joins at the end of this block.
     }
 
- // GMX_RELEASE_ASSERT(ms || simulationCommunicator != MPI_COMM_NULL,
-    GMX_RELEASE_ASSERT(ms || simulationCommunicator == MPI_COMM_WORLD,
+    GMX_RELEASE_ASSERT(!GMX_MPI || ms || simulationCommunicator != MPI_COMM_NULL,
                        "Must have valid communicator unless running a multi-simulation");
     CommrecHandle crHandle = init_commrec(simulationCommunicator);
     t_commrec*    cr       = crHandle.get();
@@ -900,8 +891,8 @@ int Mdrunner::mdrunner()
                 nonbondedTarget, userGpuTaskAssignment, emulateGpuNonbonded, canUseGpuForNonbonded,
                 gpuAccelerationOfNonbondedIsUseful(mdlog, *inputrec, !GMX_THREAD_MPI), gpusWereDetected);
         useGpuForPme = decideWhetherToUseGpusForPme(
-                useGpuForNonbonded, pmeTarget, userGpuTaskAssignment, *hwinfo_, *inputrec,
-                cr->sizeOfDefaultCommunicator, domdecOptions.numPmeRanks, gpusWereDetected);
+                useGpuForNonbonded, pmeTarget, pmeFftTarget, userGpuTaskAssignment, *hwinfo_,
+                *inputrec, cr->sizeOfDefaultCommunicator, domdecOptions.numPmeRanks, gpusWereDetected);
         useGpuForBonded = decideWhetherToUseGpusForBonded(useGpuForNonbonded, useGpuForPme,
                                                           bondedTarget, *inputrec, mtop,
                                                           domdecOptions.numPmeRanks, gpusWereDetected);
@@ -1241,6 +1232,19 @@ int Mdrunner::mdrunner()
         ddBuilder.reset(nullptr);
         // Note that local state still does not exist yet.
     }
+    // Ensure that all atoms within the same update group are in the
+    // same periodic image. Otherwise, a simulation that did not use
+    // update groups (e.g. a single-rank simulation) cannot always be
+    // correctly restarted in a way that does use update groups
+    // (e.g. a multi-rank simulation).
+    if (isSimulationMasterRank)
+    {
+        const bool useUpdateGroups = cr->dd ? ddUsesUpdateGroups(*cr->dd) : false;
+        if (useUpdateGroups)
+        {
+            putUpdateGroupAtomsInSamePeriodicImage(*cr->dd, mtop, globalState->box, globalState->x);
+        }
+    }
 
     // The GPU update is decided here because we need to know whether the constraints or
     // SETTLEs can span accross the domain borders (i.e. whether or not update groups are
@@ -1249,12 +1253,13 @@ int Mdrunner::mdrunner()
     try
     {
         const bool useUpdateGroups = cr->dd ? ddUsesUpdateGroups(*cr->dd) : false;
+        const bool haveFrozenAtoms = inputrecFrozenAtoms(inputrec.get());
 
         useGpuForUpdate = decideWhetherToUseGpuForUpdate(
                 useDomainDecomposition, useUpdateGroups, pmeRunMode, domdecOptions.numPmeRanks > 0,
                 useGpuForNonbonded, updateTarget, gpusWereDetected, *inputrec, mtop,
                 doEssentialDynamics, gmx_mtop_ftype_count(mtop, F_ORIRES) > 0,
-                replExParams.exchangeInterval > 0, doRerun, devFlags, mdlog);
+                replExParams.exchangeInterval > 0, haveFrozenAtoms, doRerun, devFlags, mdlog);
     }
     GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
 
@@ -1671,6 +1676,11 @@ int Mdrunner::mdrunner()
         gmx_enerdata_t enerd(mtop.groups.groups[SimulationAtomGroupType::EnergyOutput].size(),
                              inputrec->fepvals->n_lambda);
 
+        // cos acceleration is only supported by md, but older tpr
+        // files might still combine it with other integrators
+        GMX_RELEASE_ASSERT(inputrec->cos_accel == 0.0 || inputrec->eI == eiMD,
+                           "cos_acceleration is only supported by integrator=md");
+
         /* Kinetic energy data */
         gmx_ekindata_t ekind;
         init_ekindata(fplog, &mtop, &(inputrec->opts), &ekind, inputrec->cos_accel);
@@ -1690,20 +1700,6 @@ int Mdrunner::mdrunner()
             dd_init_bondeds(fplog, cr->dd, mtop, vsite.get(), inputrec.get(),
                             domdecOptions.checkBondedInteractions, fr->cginfo_mb);
         }
-
-        /* PLUMED */
-#if (GMX_PLUMED)
-        if(plumedswitch){
-          /* detect plumed API version */
-          int pversion=0;
-          plumed_cmd(plumedmain,"getApiVersion",&pversion);
-          if(pversion>5) {
-             int nth = gmx_omp_nthreads_get(emntDefault);
-             if(pversion>5) plumed_cmd(plumedmain,"setNumOMPthreads",&nth);
-          }
-        }
-#endif
-        /* END PLUMED */
 
         if (runScheduleWork.simulationWork.useGpuBufferOps)
         {
@@ -1847,14 +1843,6 @@ int Mdrunner::mdrunner()
     print_date_and_time(fplog, cr->nodeid, "Finished mdrun", gmx_gettime());
     walltime_accounting_destroy(walltime_accounting);
 
-    /* PLUMED */
-#if (GMX_PLUMED)
-    if(plumedswitch){
-      plumed_finalize(plumedmain);
-    }
-#endif
-    /* END PLUMED */
-
     // Ensure log file content is written
     if (logFileHandle)
     {
@@ -1913,7 +1901,8 @@ Mdrunner::Mdrunner(std::unique_ptr<MDModules> mdModules) : mdModules_(std::move(
 
 Mdrunner::Mdrunner(Mdrunner&&) noexcept = default;
 
-Mdrunner& Mdrunner::operator=(Mdrunner&& /*handle*/) noexcept = default;
+//NOLINTNEXTLINE(performance-noexcept-move-constructor) working around GCC bug 58265 in CentOS 7
+Mdrunner& Mdrunner::operator=(Mdrunner&& /*handle*/) noexcept(BUGFREE_NOEXCEPT_STRING) = default;
 
 class Mdrunner::BuilderImplementation
 {

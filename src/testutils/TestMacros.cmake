@@ -119,10 +119,12 @@ function (gmx_add_gtest_executable EXENAME)
             cuda_add_executable(${EXENAME} ${UNITTEST_TARGET_OPTIONS}
                 ${ARG_CPP_SOURCE_FILES}
                 ${ARG_CUDA_CU_SOURCE_FILES}
-                ${ARG_GPU_CPP_SOURCE_FILES})
+                ${ARG_GPU_CPP_SOURCE_FILES}
+                ${TESTUTILS_DIR}/unittest_main.cpp)
         else()
             add_executable(${EXENAME} ${UNITTEST_TARGET_OPTIONS}
-                ${ARG_CPP_SOURCE_FILES})
+                ${ARG_CPP_SOURCE_FILES}
+                ${TESTUTILS_DIR}/unittest_main.cpp)
         endif()
 
         if (GMX_GPU_CUDA)
@@ -167,7 +169,7 @@ function (gmx_add_gtest_executable EXENAME)
         endif()
 
         target_link_libraries(${EXENAME} PRIVATE
-            testutils common libgromacs gmock
+            testutils libgromacs gmock
             ${GMX_COMMON_LIBRARIES} ${GMX_EXE_LINKER_FLAGS})
 
         if(GMX_CLANG_TIDY)

@@ -43,7 +43,7 @@
  */
 #include "gmxpre.h"
 
-#include "testutils/test_device.h"
+#include "test_device.h"
 
 #include <memory>
 

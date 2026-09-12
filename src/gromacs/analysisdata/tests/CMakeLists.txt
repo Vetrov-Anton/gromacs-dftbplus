@@ -35,7 +35,6 @@
 gmx_add_unit_test_library(analysisdata-test-shared
                           datatest.cpp
                           mock_datamodule.cpp)
-target_link_libraries(analysisdata-test-shared PRIVATE legacy_api)
 
 gmx_add_unit_test(AnalysisDataUnitTests analysisdata-test
     CPP_SOURCE_FILES

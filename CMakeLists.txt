@@ -3,7 +3,7 @@
 #
 # Copyright (c) 2009,2010,2011,2012,2013 by the GROMACS development team.
 # Copyright (c) 2014,2015,2016,2017,2018 by the GROMACS development team.
-# Copyright (c) 2019,2020, by the GROMACS development team, led by
+# Copyright (c) 2019,2020,2021,2022, by the GROMACS development team, led by
 # Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
 # and including many others, as listed in the AUTHORS file in the
 # top-level source directory and at http://www.gromacs.org.
@@ -172,7 +172,7 @@ gmx_detect_target_architecture()
 ########################################################################
 include(gmxOptionUtilities)
 
-set(CMAKE_PREFIX_PATH "" CACHE STRING "Extra locations to search for external libraries and tools (give directory without lib, bin, or include)")
+set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH}" CACHE STRING "Extra locations to search for external libraries and tools (give directory without lib, bin, or include)")
 
 # Fujitsu only has SIMD in double precision, so this will be faster
 gmx_set_boolean(GMX_DOUBLE_DEFAULT GMX_TARGET_FUJITSU_SPARC64)
@@ -242,8 +242,6 @@ gmx_option_multichoice(
     None
     none gaussian mopac gamess orca dftbplus)
 
-option(GMX_PLUMED "Link with Plumed (requires 3 symlinks in Gromacs directory)" OFF)
-
 gmx_dependent_cache_variable(GMX_SIMD_REF_FLOAT_WIDTH  "Reference SIMD single precision width" STRING "4" "GMX_SIMD STREQUAL REFERENCE")
 gmx_dependent_cache_variable(GMX_SIMD_REF_DOUBLE_WIDTH "Reference SIMD double precision width" STRING "2" "GMX_SIMD STREQUAL REFERENCE")
 
@@ -306,6 +304,7 @@ include(gmxManageOpenMP)
 # These need to be done early (before further tests).
 #####################################################################
 
+include(gmxTestIntelLLVM)
 include(gmxCFlags)
 gmx_c_flags()
 
@@ -518,6 +517,10 @@ if (GMX_HWLOC)
         message(FATAL_ERROR "HWLOC package support required, but not found.")
     endif()
 
+    if (HWLOC_FOUND AND HWLOC_VERSION VERSION_LESS "2")
+        message(STATUS "Support for hwloc versions 1.x is deprecated")
+    endif()
+
     set(HWLOC_FIND_QUIETLY_AFTER_FIRST_RUN TRUE CACHE INTERNAL "Be quiet during future attempts to find HWLOC")
 endif()
 
@@ -575,12 +578,19 @@ include(gmxManageTNG)
 
 include(gmxManageLmfit)
 
+# The earliest version of the CUDA toolkit that supports c++14 is 9.0
+set(REQUIRED_CUDA_VERSION 9.0)
+set(REQUIRED_CUDA_COMPUTE_CAPABILITY 3.0)
+
 if(GMX_GPU)
 
     string(TOUPPER "${GMX_GPU}" _gmx_gpu_uppercase)
     if(${_gmx_gpu_uppercase} STREQUAL "CUDA")
         include(gmxManageCuda)
     elseif(${_gmx_gpu_uppercase} STREQUAL "OPENCL")
+        message(STATUS "GPU support with OpenCL is deprecated. It is still fully supported (and " 
+            "recommended for AMD and Intel GPUs). It may be replaced by different approaches in "
+            "future releases of GROMACS.")
         include(gmxManageOpenCL)
     elseif(${_gmx_gpu_uppercase} STREQUAL "SYCL")
         include(gmxManageSYCL)
@@ -610,7 +620,10 @@ gmx_add_cache_dependency(GMX_BUILD_UNITTESTS BOOL BUILD_TESTING OFF)
 # Our own GROMACS tests
 ########################################################################
 
+include_directories(BEFORE ${CMAKE_SOURCE_DIR}/src)
 include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/src/external)
+# Required for config.h, maybe should only be set in src/CMakeLists.txt
+include_directories(BEFORE ${CMAKE_BINARY_DIR}/src)
 
 include(gmxTestInlineASM)
 gmx_test_inline_asm_gcc_x86(GMX_X86_GCC_INLINE_ASM)
@@ -680,15 +693,6 @@ elseif(${GMX_QMMM_PROGRAM} STREQUAL "NONE")
 else()
     gmx_invalid_option_value(GMX_QMMM_PROGRAM)
 endif()
-
-# Process the Plumed option
-if(${GMX_PLUMED})
-    set(GMX_PLUMED_VALUE 1)
-else()
-    set(GMX_PLUMED_VALUE 0)
-endif()
-add_definitions(-DGMX_PLUMED=${GMX_PLUMED_VALUE})
-list(APPEND INSTALLED_HEADER_DEFINITIONS "-DGMX_PLUMED=${GMX_PLUMED_VALUE}")
 
 ##################################################
 # Process FFT library settings
@@ -791,7 +795,6 @@ else()
     # binaries relocatable.
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin") #Assume OS X >=10.5
         set(CMAKE_INSTALL_RPATH "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
-        set(CMAKE_INSTALL_NAME_DIR ${CMAKE_INSTALL_RPATH})
     else()
         set(CMAKE_INSTALL_RPATH "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
     endif()

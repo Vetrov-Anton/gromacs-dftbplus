@@ -1,7 +1,8 @@
 /*
  * This file is part of the GROMACS molecular simulation package.
  *
- * Copyright (c) 2015,2016,2017,2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2015,2016,2017,2018,2019, The GROMACS development team.
+ * Copyright (c) 2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -164,7 +165,7 @@ void sumPmf(gmx::ArrayRef<PointState> pointState,
     /* Need to temporarily exponentiate the log weights to sum over simulations */
     for (size_t i = 0; i < buffer.size(); i++)
     {
-        buffer[i] = pointState[i].inTargetRegion() ? std::exp(-pointState[i].logPmfSum()) : 0;
+        buffer[i] = pointState[i].inTargetRegion() ? std::exp(pointState[i].logPmfSum()) : 0;
     }
 
     sumOverSimulations(gmx::ArrayRef<double>(buffer), commRecord, multiSimComm);
@@ -175,7 +176,7 @@ void sumPmf(gmx::ArrayRef<PointState> pointState,
     {
         if (pointState[i].inTargetRegion())
         {
-            pointState[i].setLogPmfSum(-std::log(buffer[i] * normFac));
+            pointState[i].setLogPmfSum(std::log(buffer[i] * normFac));
         }
     }
 }
@@ -331,7 +332,8 @@ void BiasState::calcConvolvedPmf(const std::vector<DimParams>& dimParams,
 
         GMX_RELEASE_ASSERT(freeEnergyWeights > 0,
                            "Attempting to do log(<= 0) in AWH convolved PMF calculation.");
-        (*convolvedPmf)[m] = -std::log(static_cast<float>(freeEnergyWeights));
+        // We should cast to float after taking the logarithm to avoid underflows
+        (*convolvedPmf)[m] = static_cast<float>(-std::log(freeEnergyWeights));
     }
 }
 
@@ -542,17 +544,11 @@ double BiasState::moveUmbrella(const std::vector<DimParams>& dimParams,
                                gmx::ArrayRef<double>         biasForce,
                                int64_t                       step,
                                int64_t                       seed,
-                               int                           indexSeed,
-                               bool                          onlySampleUmbrellaGridpoint)
+                               int                           indexSeed)
 {
     /* Generate and set a new coordinate reference value */
     coordState_.sampleUmbrellaGridpoint(grid, coordState_.gridpointIndex(), probWeightNeighbor,
                                         step, seed, indexSeed);
-
-    if (onlySampleUmbrellaGridpoint)
-    {
-        return 0;
-    }
 
     std::vector<double> newForce(dimParams.size());
     double              newPotential = calcUmbrellaForceAndPotential(
@@ -1315,6 +1311,9 @@ double BiasState::updateProbabilityWeightsAndConvolvedBias(const std::vector<Dim
                     weightSum -= weightData[i];
                 }
             }
+            /* Subtracting potentially very large values above may lead to rounding errors, causing
+             * negative weightSum, even in double precision. */
+            weightSum = std::max(weightSum, GMX_DOUBLE_MIN);
         }
     }
 
@@ -1729,13 +1728,22 @@ static void readUserPmfAndTargetDistribution(const std::vector<DimParams>& dimPa
     std::vector<int> gridIndexToDataIndex(grid.numPoints());
     mapGridToDataGrid(&gridIndexToDataIndex, data, numRows, filename, grid, correctFormatMessage);
 
+    // The bounds for the PMF such that exp(pmf) doesn't over/underflow in double precision
+    const double c_pmfMax = 700.0;
+
     /* Extract the data for each grid point.
      * We check if the target distribution is zero for all points.
      */
     bool targetDistributionIsZero = true;
     for (size_t m = 0; m < pointState->size(); m++)
     {
-        (*pointState)[m].setLogPmfSum(-data[columnIndexPmf][gridIndexToDataIndex[m]]);
+        const double pmf = data[columnIndexPmf][gridIndexToDataIndex[m]];
+        if (pmf < -c_pmfMax || pmf > c_pmfMax)
+        {
+            GMX_THROW(InvalidInputError(
+                    "A value in the user input PMF is beyond the bounds of +-700 kT"));
+        }
+        (*pointState)[m].setLogPmfSum(-pmf);
         double target = data[columnIndexTarget][gridIndexToDataIndex[m]];
 
         /* Check if the values are allowed. */

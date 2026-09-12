@@ -209,7 +209,10 @@ static void gmx_collect_hardware_mpi(const gmx::CpuInfo&             cpuInfo,
      * - family=23 with the below listed models;
      * - Hygon as vendor.
      */
-    const bool cpuIsAmdZen1 = gmx::cpuIsAmdZen1(cpuInfo);
+    const bool cpuIsAmdZen1 = ((cpuInfo.vendor() == CpuInfo::Vendor::Amd && cpuInfo.family() == 23
+                                && (cpuInfo.model() == 1 || cpuInfo.model() == 17
+                                    || cpuInfo.model() == 8 || cpuInfo.model() == 24))
+                               || cpuInfo.vendor() == CpuInfo::Vendor::Hygon);
 
     int numCompatibleDevices = getCompatibleDevices(hardwareInfo->deviceInfoList).size();
 #if GMX_LIB_MPI

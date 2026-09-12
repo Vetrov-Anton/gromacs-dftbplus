@@ -4,7 +4,7 @@
  * Copyright (c) 1991-2000, University of Groningen, The Netherlands.
  * Copyright (c) 2001-2004, The GROMACS development team.
  * Copyright (c) 2013,2014,2015,2016,2017 The GROMACS development team.
- * Copyright (c) 2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2018,2019,2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -200,9 +200,17 @@ bool pme_gpu_supports_input(const t_inputrec& ir, std::string* error)
     }
     if (!EI_DYNAMICS(ir.eI))
     {
-        errorReasons.emplace_back(
-                "Cannot compute PME interactions on a GPU, because PME GPU requires a dynamical "
-                "integrator (md, sd, etc).");
+        errorReasons.emplace_back("non-dynamical integrators (e.g. minimization, tpi, nm)");
+    }
+    return addMessageIfNotSupported(errorReasons, error);
+}
+
+bool pme_gpu_mixed_mode_supports_input(const t_inputrec& ir, std::string* error)
+{
+    std::list<std::string> errorReasons;
+    if (ir.efep != efepNO)
+    {
+        errorReasons.emplace_back("Free Energy Perturbation (in PME GPU mixed mode)");
     }
     return addMessageIfNotSupported(errorReasons, error);
 }
@@ -975,7 +983,7 @@ void gmx_pme_calc_energy(gmx_pme_t* pme, gmx::ArrayRef<const gmx::RVec> x, gmx::
     /* Only calculate the spline coefficients, don't actually spread */
     spread_on_grid(pme, atc, nullptr, TRUE, FALSE, pme->fftgrid[PME_GRID_QA], FALSE, PME_GRID_QA);
 
-    *V = gather_energy_bsplines(pme, grid->grid.grid, atc, 0, nullptr);
+    *V = gather_energy_bsplines(pme, grid->grid.grid, atc);
 }
 
 /*! \brief Calculate initial Lorentz-Berthelot coefficients for LJ-PME */
@@ -1582,8 +1590,7 @@ int gmx_pme_do(struct gmx_pme_t*              pme,
                         try
                         {
                             gather_f_bsplines(pme, grid, bClearF, &pme->atc[0],
-                                              &pme->atc[0].spline[thread], scale,
-                                              FALSE, 0, FALSE);
+                                              &pme->atc[0].spline[thread], scale);
                         }
                         GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
                     }

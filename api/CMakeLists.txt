@@ -32,9 +32,6 @@
 # To help us fund GROMACS development, we humbly ask that you cite
 # the research papers on the package. Check out http://www.gromacs.org.
 
-# The legacy public API headers may still be installed,
-# but may be removed or changed without warning.
-add_subdirectory(legacy)
 
 # Activate targets for new C++ API components and docs.
 if(GMX_NATIVE_WINDOWS OR GMX_BUILD_MDRUN_ONLY)
@@ -51,10 +48,11 @@ if (GMXAPI)
 endif()
 
 # Activate targets NBLIB
-if(GMX_NATIVE_WINDOWS OR GMX_BUILD_MDRUN_ONLY)
+if(GMX_NATIVE_WINDOWS OR GMX_BUILD_MDRUN_ONLY OR NOT BUILD_SHARED_LIBS OR CMAKE_CXX_COMPILER_ID MATCHES "Intel")
     # NBLIB has not been tested in Microsoft environments.
     # NBLIB relies on libgromacs and is incompatible with an `mdrun`-only build.
     # NBLIB requires position-independent code
+    # NBLIB causes an ICE in icc 19.1.2.20200623
     set(_NBLIB_DEFAULT OFF)
 else()
     set(_NBLIB_DEFAULT ON)

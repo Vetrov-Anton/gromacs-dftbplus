@@ -4,7 +4,7 @@
  * Copyright (c) 1991-2000, University of Groningen, The Netherlands.
  * Copyright (c) 2001-2004, The GROMACS development team.
  * Copyright (c) 2013,2014,2015,2016,2017 by the GROMACS development team.
- * Copyright (c) 2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2018,2019,2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -248,10 +248,35 @@ void update_pcouple_after_coordinates(FILE*                fplog,
                 /* Scale the coordinates */
                 if (scaleCoordinates)
                 {
-                    auto x = state->x.rvec_array();
+                    const bool haveFrozenAtoms = inputrecFrozenAtoms(inputrec);
+
+                    auto  x       = state->x.rvec_array();
+                    ivec* nFreeze = inputrec->opts.nFreeze;
                     for (int n = start; n < start + homenr; n++)
                     {
-                        tmvmul_ur0(pressureCouplingMu, x[n], x[n]);
+                        if (!haveFrozenAtoms)
+                        {
+                            tmvmul_ur0(pressureCouplingMu, x[n], x[n]);
+                        }
+                        else
+                        {
+                            int g = md->cFREEZE[n];
+                            if (!nFreeze[g][XX])
+                            {
+                                x[n][XX] = pressureCouplingMu[XX][XX] * x[n][XX]
+                                           + pressureCouplingMu[YY][XX] * x[n][YY]
+                                           + pressureCouplingMu[ZZ][XX] * x[n][ZZ];
+                            }
+                            if (!nFreeze[g][YY])
+                            {
+                                x[n][YY] = pressureCouplingMu[YY][YY] * x[n][YY]
+                                           + pressureCouplingMu[ZZ][YY] * x[n][ZZ];
+                            }
+                            if (!nFreeze[g][ZZ])
+                            {
+                                x[n][ZZ] = pressureCouplingMu[ZZ][ZZ] * x[n][ZZ];
+                            }
+                        }
                     }
                 }
             }
@@ -1764,7 +1789,7 @@ static real energyNoseHoover(const t_inputrec* ir, const t_state* state, const t
         const double* ivxi  = &state->nosehoover_vxi[i * nh];
         const double* iQinv = &(MassQ->Qinv[i * nh]);
 
-        int  nd   = static_cast<int>(ir->opts.nrdf[i]);
+        real nd   = ir->opts.nrdf[i];
         real reft = std::max<real>(ir->opts.ref_t[i], 0);
         real kT   = BOLTZ * reft;
 
@@ -1779,7 +1804,7 @@ static real energyNoseHoover(const t_inputrec* ir, const t_state* state, const t
                     {
                         energy += 0.5 * gmx::square(ivxi[j]) / iQinv[j];
                         /* contribution from the thermal variable of the NH chain */
-                        int ndj;
+                        real ndj = 0;
                         if (j == 0)
                         {
                             ndj = nd;

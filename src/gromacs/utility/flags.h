@@ -43,8 +43,6 @@
 #ifndef GMX_UTILITY_FLAGS_H
 #define GMX_UTILITY_FLAGS_H
 
-#include <cstdint>
-
 namespace gmx
 {
 

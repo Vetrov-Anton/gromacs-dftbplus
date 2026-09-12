@@ -4,7 +4,7 @@
  * Copyright (c) 1991-2000, University of Groningen, The Netherlands.
  * Copyright (c) 2001-2004, The GROMACS development team.
  * Copyright (c) 2013,2014,2015,2016,2017 by the GROMACS development team.
- * Copyright (c) 2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2018,2019,2020,2022, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -69,15 +69,6 @@
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/smalloc.h"
-
-/* PLUMED */
-#if (GMX_PLUMED)
-#include "../../../Plumed.h"
-int    plumedswitch=0;
-plumed plumedmain;
-void(*plumedcmd)(plumed,const char*,const void*)=NULL;
-#endif
-/* END PLUMED */
 
 using gmx::ArrayRef;
 using gmx::RVec;
@@ -220,8 +211,7 @@ void calculateLongRangeNonbondeds(t_forcerec*                   fr,
                             DOMAINDECOMP(cr) ? dd_pme_maxshift_y(cr->dd) : 0, nrnb, wcycle,
                             ewaldOutput.vir_q, ewaldOutput.vir_lj, &Vlr_q, &Vlr_lj,
                             lambda[efptCOUL], lambda[efptVDW], &ewaldOutput.dvdl[efptCOUL],
-                            &ewaldOutput.dvdl[efptVDW], stepWork,
-                            FALSE, FALSE, 0, nullptr);
+                            &ewaldOutput.dvdl[efptVDW], stepWork);
                     wallcycle_stop(wcycle, ewcPMEMESH);
                     if (status != 0)
                     {
@@ -282,14 +272,4 @@ void calculateLongRangeNonbondeds(t_forcerec*                   fr,
     {
         print_nrnb(debug, nrnb);
     }
-
-    /* PLUMED */
-#if (GMX_PLUMED)
-    if(plumedswitch){
-      int plumedNeedsEnergy;
-      (*plumedcmd)(plumedmain,"isEnergyNeeded",&plumedNeedsEnergy);
-      if(!plumedNeedsEnergy) (*plumedcmd)(plumedmain,"performCalc",NULL);
-    }
-#endif
-    /* END PLUMED */
 }

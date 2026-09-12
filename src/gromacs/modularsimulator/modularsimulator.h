@@ -50,11 +50,11 @@
 #ifndef GROMACS_MODULARSIMULATOR_MODULARSIMULATOR_H
 #define GROMACS_MODULARSIMULATOR_MODULARSIMULATOR_H
 
-#include <cstdlib>
-
 #include "gromacs/mdrun/isimulator.h"
 
+struct CheckpointHeaderContents;
 struct t_fcdata;
+struct t_trxframe;
 
 namespace gmx
 {
@@ -87,6 +87,11 @@ public:
                                   const t_fcdata*                  fcd,
                                   bool                             doEssentialDynamics,
                                   bool                             doMembed);
+
+    //! Read everything that can be stored in t_trxframe from a checkpoint file
+    static void readCheckpointToTrxFrame(t_trxframe*                     fr,
+                                         ReadCheckpointDataHolder*       readCheckpointDataHolder,
+                                         const CheckpointHeaderContents& checkpointHeaderContents);
 
     // Only builder can construct
     friend class SimulatorBuilder;

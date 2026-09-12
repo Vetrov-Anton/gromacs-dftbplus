@@ -9,14 +9,16 @@ SCRIPT=$PWD/scripted_gmx_docker_builds.py
 # images needed, because the same one can test library,
 # thread and no MPI configurations.
 
+args[${#args[@]}]="--gcc 10 --clfft --mpi openmpi --ubuntu 20.04"
+args[${#args[@]}]="--gcc 9 --clfft --mpi openmpi"
 args[${#args[@]}]="--gcc 8 --cuda 11.0 --clfft --mpi openmpi"
-args[${#args[@]}]="--gcc 7 --clfft --mpi openmpi --ubuntu 18.04"
+args[${#args[@]}]="--gcc 7 --cuda 10.2 --clfft --mpi openmpi --ubuntu 18.04"
 args[${#args[@]}]="--llvm 8 --tsan"
 args[${#args[@]}]="--llvm 8 --cuda 10.0 --clfft --mpi openmpi"
 args[${#args[@]}]="--llvm 8 --cuda 10.1 --clfft --mpi openmpi"
 args[${#args[@]}]="--llvm 8 --cuda 11.0 --clfft --mpi openmpi"
 args[${#args[@]}]="--llvm 9 --clfft --mpi openmpi --ubuntu 18.04"
-args[${#args[@]}]="--oneapi 2021.1-beta09"
+args[${#args[@]}]="--oneapi 2021.1.1"
 args[${#args[@]}]="--llvm --doxygen"
 
 echo "Building the following images."
@@ -28,7 +30,7 @@ echo
 
 for arg_string in "${args[@]}"; do
   # shellcheck disable=SC2086
-  tag=$(python3 -m utility $arg_string)
+  tag=$(python3 -m utility $arg_string):release-2021
   tags[${#tags[@]}]=$tag
   # shellcheck disable=SC2086
   python3 $SCRIPT $arg_string | docker build -t $tag -

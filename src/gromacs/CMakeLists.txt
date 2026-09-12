@@ -33,10 +33,6 @@
 # To help us fund GROMACS development, we humbly ask that you cite
 # the research papers on the package. Check out http://www.gromacs.org.
 
-if (GMX_PLUMED)
-    include(${CMAKE_SOURCE_DIR}/Plumed.cmake)
-endif()
-
 set(LIBGROMACS_SOURCES)
 
 if (GMX_CLANG_CUDA)
@@ -112,8 +108,6 @@ add_subdirectory(imd)
 add_subdirectory(compat)
 add_subdirectory(mimic)
 add_subdirectory(modularsimulator)
-# Note that this subset should match the subset of module
-# BUILD_INTERFACEs added to libgromacs below.
 if (NOT GMX_BUILD_MDRUN_ONLY)
     add_subdirectory(gmxana)
     add_subdirectory(gmxpreprocess)
@@ -148,8 +142,10 @@ if (WIN32)
 endif()
 list(APPEND libgromacs_object_library_dependencies thread_mpi)
 
+configure_file(version.h.cmakein version.h)
 if(GMX_INSTALL_LEGACY_API)
   install(FILES
+          ${CMAKE_CURRENT_BINARY_DIR}/version.h
 	  analysisdata.h
 	  options.h
 	  selection.h
@@ -192,13 +188,6 @@ if (GMX_GPU_CUDA)
 else()
     add_library(libgromacs ${LIBGROMACS_SOURCES})
 endif()
-target_link_libraries(libgromacs PRIVATE $<BUILD_INTERFACE:common>)
-# As long as the libgromacs target has source files that reference headers from
-# modules that don't provide CMake targets, libgromacs needs to use `src/`
-# amongst its include directories (to support `#include "gromacs/module/header.h"`).
-add_library(legacy_modules INTERFACE)
-target_include_directories(legacy_modules INTERFACE $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>)
-target_link_libraries(libgromacs PRIVATE $<BUILD_INTERFACE:legacy_modules>)
 
 # Add these contents first because linking their tests can take a lot
 # of time, so we want lots of parallel work still available after
@@ -217,7 +206,6 @@ foreach(object_library ${libgromacs_object_library_dependencies})
         set_target_properties(${object_library} PROPERTIES POSITION_INDEPENDENT_CODE true)
     endif()
     target_include_directories(${object_library} SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/thread_mpi/include)
-    target_link_libraries(${object_library} PRIVATE common)
 
     # Add the sources from the object libraries to the main library.
     target_sources(libgromacs PRIVATE $<TARGET_OBJECTS:${object_library}>)
@@ -333,75 +321,12 @@ target_link_libraries(libgromacs
                       PUBLIC
                       ${GMX_PUBLIC_LIBRARIES}
                       )
-if (GMX_PLUMED)
-    target_link_libraries(libgromacs PUBLIC ${PLUMED_LOAD})
-endif()
 if (GMX_QMMM_DFTBPLUS)
     # The QM/MM code lives in libgromacs, so libgromacs itself must carry the
     # DFTB+ dependency - not only the gmx/mdrun executables.
     list(APPEND CMAKE_PREFIX_PATH ${GMX_QMMM_DFTBPLUS_LIB})
     find_package(DftbPlus CONFIG REQUIRED)
     target_link_libraries(libgromacs PRIVATE DftbPlus::DftbPlus)
-endif()
-target_link_libraries(libgromacs PUBLIC legacy_api)
-# Dependencies from libgromacs to the modules are set up here, but
-# once the add_subdirectory() commands are re-ordered then
-# responsibility for setting this up will move to the respective
-# modules.
-target_link_libraries(libgromacs PRIVATE
-                      $<BUILD_INTERFACE:applied_forces>
-                      $<BUILD_INTERFACE:commandline>
-                      $<BUILD_INTERFACE:compat>
-                      $<BUILD_INTERFACE:domdec>
-#                      $<BUILD_INTERFACE:energyanalysis>
-                      $<BUILD_INTERFACE:essentialdynamics>
-                      $<BUILD_INTERFACE:ewald>
-                      $<BUILD_INTERFACE:fft>
-                      $<BUILD_INTERFACE:fileio>
-                      $<BUILD_INTERFACE:gmxlib>
-                      $<BUILD_INTERFACE:gpu_utils>
-                      $<BUILD_INTERFACE:hardware>
-                      $<BUILD_INTERFACE:imd>
-                      $<BUILD_INTERFACE:linearalgebra>
-                      $<BUILD_INTERFACE:listed_forces>
-                      $<BUILD_INTERFACE:math>
-                      $<BUILD_INTERFACE:mdlib>
-                      $<BUILD_INTERFACE:mdrun>
-                      $<BUILD_INTERFACE:mdrunutility>
-                      $<BUILD_INTERFACE:mdspan>
-                      $<BUILD_INTERFACE:mdtypes>
-                      $<BUILD_INTERFACE:mimic>
-                      $<BUILD_INTERFACE:modularsimulator>
-                      $<BUILD_INTERFACE:nbnxm>
-                      $<BUILD_INTERFACE:onlinehelp>
-                      $<BUILD_INTERFACE:options>
-                      $<BUILD_INTERFACE:pbcutil>
-                      $<BUILD_INTERFACE:pulling>
-                      $<BUILD_INTERFACE:random>
-                      $<BUILD_INTERFACE:restraint>
-                      $<BUILD_INTERFACE:selection>
-                      $<BUILD_INTERFACE:simd>
-                      $<BUILD_INTERFACE:swap>
-                      $<BUILD_INTERFACE:tables>
-                      $<BUILD_INTERFACE:taskassignment>
-                      $<BUILD_INTERFACE:timing>
-                      $<BUILD_INTERFACE:topology>
-                      $<BUILD_INTERFACE:trajectory>
-                      $<BUILD_INTERFACE:utility>
-                      )
-# Note that this subset should match the subset of module
-# subdirectories added above.
-if (NOT GMX_BUILD_MDRUN_ONLY)
-    target_link_libraries(libgromacs PRIVATE
-                          $<BUILD_INTERFACE:analysisdata>
-                          $<BUILD_INTERFACE:coordinateio>
-                          $<BUILD_INTERFACE:correlationfunctions>
-                          $<BUILD_INTERFACE:gmxana>
-                          $<BUILD_INTERFACE:gmxpreprocess>
-                          $<BUILD_INTERFACE:statistics>
-                          $<BUILD_INTERFACE:tools>
-                          $<BUILD_INTERFACE:trajectoryanalysis>
-                          )
 endif()
 if (GMX_OPENMP)
     target_link_libraries(libgromacs PUBLIC OpenMP::OpenMP_CXX)
@@ -462,7 +387,6 @@ endif()
 
 # Only install the library in mdrun-only mode if it is actually necessary
 # for the binary
-# TODO: Stop installing libgromacs. Possibly allow installation during deprecation period with GMX_INSTALL_LEGACY_API.
 if (NOT GMX_BUILD_MDRUN_ONLY OR BUILD_SHARED_LIBS)
     install(TARGETS libgromacs
             EXPORT libgromacs
@@ -481,8 +405,8 @@ if (NOT GMX_BUILD_MDRUN_ONLY OR BUILD_SHARED_LIBS)
     if(GMX_INSTALL_LEGACY_API)
         target_compile_features(libgromacs INTERFACE cxx_std_${CMAKE_CXX_STANDARD})
     endif()
+    add_library(Gromacs::libgromacs ALIAS libgromacs)
 endif()
-add_library(Gromacs::libgromacs ALIAS libgromacs)
 
 if (NOT GMX_BUILD_MDRUN_ONLY)
     include(InstallLibInfo.cmake)

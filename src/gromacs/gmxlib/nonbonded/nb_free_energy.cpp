@@ -4,7 +4,7 @@
  * Copyright (c) 1991-2000, University of Groningen, The Netherlands.
  * Copyright (c) 2001-2004, The GROMACS development team.
  * Copyright (c) 2013,2014,2015,2016,2017 by the GROMACS development team.
- * Copyright (c) 2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2018,2019,2020,2022, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -375,6 +375,10 @@ static void nb_free_energy_kernel(const t_nblist* gmx_restrict nlist,
     real* gmx_restrict f      = &(forceWithShiftForces->force()[0][0]);
     real* gmx_restrict fshift = &(forceWithShiftForces->shiftForces()[0][0]);
 
+    const real rlistSquared = gmx::square(fr->rlist);
+
+    int numExcludedPairsBeyondRlist = 0;
+
     for (int n = 0; n < nri; n++)
     {
         int npair_within_cutoff = 0;
@@ -430,6 +434,11 @@ static void nb_free_energy_kernel(const t_nblist* gmx_restrict nlist,
                 continue;
             }
             npair_within_cutoff++;
+
+            if (rsq > rlistSquared)
+            {
+                numExcludedPairsBeyondRlist++;
+            }
 
             if (rsq > 0)
             {
@@ -722,7 +731,7 @@ static void nb_free_energy_kernel(const t_nblist* gmx_restrict nlist,
                 }
             }
 
-            if (vdwInteractionTypeIsEwald && r < rvdw)
+            if (vdwInteractionTypeIsEwald && (r < rvdw || !bPairIncluded))
             {
                 /* See comment in the preamble. When using LJ-Ewald interactions
                  * (unless we use a switch modifier) we subtract the reciprocal-space
@@ -839,6 +848,21 @@ static void nb_free_energy_kernel(const t_nblist* gmx_restrict nlist,
      */
 #pragma omp atomic
     inc_nrnb(nrnb, eNR_NBKERNEL_FREE_ENERGY, nlist->nri * 12 + nlist->jindex[nri] * 150);
+
+    if (numExcludedPairsBeyondRlist > 0)
+    {
+        gmx_fatal(FARGS,
+                  "There are %d perturbed non-bonded pair interactions beyond the pair-list cutoff "
+                  "of %g nm, which is not supported. This can happen because the system is "
+                  "unstable, or because intra-molecular interactions are excluded. "
+                  "The latter case is usually triggered by the use of couple-intramol=no. "
+                  "The issue can be either due to a too small box, which can cause a molecule "
+                  "and its periodic image to end up in the pairlist. "
+                  "In this case increase the box size. "
+                  "Or it can happen because interactions at distances longer than rlist are "
+                  "excluded, in which case you can try to increase nstlist or rlist to avoid this.",
+                  numExcludedPairsBeyondRlist, fr->rlist);
+    }
 }
 
 typedef void (*KernelFunction)(const t_nblist* gmx_restrict nlist,

@@ -4,7 +4,7 @@
  * Copyright (c) 1991-2000, University of Groningen, The Netherlands.
  * Copyright (c) 2001-2004, The GROMACS development team.
  * Copyright (c) 2013,2014,2015,2016,2017 The GROMACS development team.
- * Copyright (c) 2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2018,2019,2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -52,6 +52,7 @@
 #include <ctime>
 
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 #include "gromacs/commandline/filenm.h"
@@ -113,15 +114,6 @@
 
 #include "legacysimulator.h"
 #include "shellfc.h"
-
-/* PLUMED */
-#if (GMX_PLUMED)
-#include "../../../Plumed.h"
-#include "gromacs/mdrunutility/multisim.h"
-extern int    plumedswitch;
-extern plumed plumedmain;
-extern void(*plumedcmd)(plumed,const char*,const void*);
-#endif
 
 using gmx::ArrayRef;
 using gmx::MdrunScheduleWorkload;
@@ -387,13 +379,7 @@ static void init_em(FILE*                fplog,
                     gmx_global_stat_t*   gstat,
                     VirtualSitesHandler* vsite,
                     gmx::Constraints*    constr,
-                    gmx_shellfc_t**      shellfc 
-#if (GMX_PLUMED)
-                    /* PLUMED */
-                    , const gmx_multisim_t *ms
-                    /* END PLUMED */
-#endif
-                    )
+                    gmx_shellfc_t**      shellfc)
 {
     real dvdl_constr;
 
@@ -489,50 +475,6 @@ static void init_em(FILE*                fplog,
     }
 
     calc_shifts(ems->s.box, fr->shift_vec);
-
-    /* PLUMED */
-#if (GMX_PLUMED)
-    if(plumedswitch){
-    //if(cr->ms && cr->ms->nsim>1) {
-      if(ms && ms->numSimulations_>1) {
-      //if(MASTER(cr)) (*plumedcmd) (plumedmain,"GREX setMPIIntercomm",&cr->ms->mpi_comm_masters);
-        if(MASTER(cr)) (*plumedcmd) (plumedmain,"GREX setMPIIntercomm",&ms->mastersComm_);
-        if(PAR(cr)){
-          if(DOMAINDECOMP(cr)) {
-            (*plumedcmd) (plumedmain,"GREX setMPIIntracomm",&cr->dd->mpi_comm_all);
-          }else{
-            (*plumedcmd) (plumedmain,"GREX setMPIIntracomm",&cr->mpi_comm_mysim);
-          }
-        }
-        (*plumedcmd) (plumedmain,"GREX init",NULL);
-      }
-      if(PAR(cr)){
-        if(DOMAINDECOMP(cr)) {
-          (*plumedcmd) (plumedmain,"setMPIComm",&cr->dd->mpi_comm_all);
-        }else{
-          (*plumedcmd) (plumedmain,"setMPIComm",&cr->mpi_comm_mysim);
-        }
-      }
-      (*plumedcmd) (plumedmain,"setNatoms",&top_global->natoms);
-      (*plumedcmd) (plumedmain,"setMDEngine","gromacs");
-      (*plumedcmd) (plumedmain,"setLog",fplog);
-      real real_delta_t;
-      real_delta_t=ir->delta_t;
-      (*plumedcmd) (plumedmain,"setTimestep",&real_delta_t);
-      (*plumedcmd) (plumedmain,"init",NULL);
-
-      if(PAR(cr)){
-        if(DOMAINDECOMP(cr)) {
-        //(*plumedcmd) (plumedmain,"setAtomsNlocal",&cr->dd->nat_home);
-          int nat_home = dd_numHomeAtoms(*cr->dd);
-          (*plumedcmd) (plumedmain,"setAtomsNlocal",&nat_home);
-        //(*plumedcmd) (plumedmain,"setAtomsGatindex",cr->dd->gatindex);
-          (*plumedcmd) (plumedmain,"setAtomsGatindex",cr->dd->globalAtomIndices.data());
-        }
-      }
-    }
-#endif
-    /* END PLUMED */
 }
 
 //! Finalize the minimization
@@ -903,55 +845,12 @@ void EnergyEvaluator::run(em_state_t* ems, rvec mu_tot, tensor vir, tensor pres,
     /* do_force always puts the charge groups in the box and shifts again
      * We do not unshift, so molecules are always whole in congrad.c
      */
-
-    /* PLUMED */
-#if (GMX_PLUMED)
-    int plumedNeedsEnergy=0;
-    matrix plumed_vir;
-    if(plumedswitch){
-      long int lstep=count; (*plumedcmd)(plumedmain,"setStepLong",&lstep);
-      (*plumedcmd) (plumedmain,"setPositions",&ems->s.x[0][0]);
-      (*plumedcmd) (plumedmain,"setMasses",&mdAtoms->mdatoms()->massT[0]);
-      (*plumedcmd) (plumedmain,"setCharges",&mdAtoms->mdatoms()->chargeA[0]);
-      (*plumedcmd) (plumedmain,"setBox",&ems->s.box[0][0]);
-      (*plumedcmd) (plumedmain,"prepareCalc",NULL);
-   // (*plumedcmd) (plumedmain,"setForces",&ems->f[0][0]);
-      auto forceView = &ems->f.view();
-      (*plumedcmd) (plumedmain,"setForces",forceView->forceWithPadding().unpaddedArrayRef().data());
-      (*plumedcmd) (plumedmain,"isEnergyNeeded",&plumedNeedsEnergy);
-      clear_mat(plumed_vir);
-      (*plumedcmd) (plumedmain,"setVirial",&plumed_vir[0][0]);
-    }
-#endif
-    /* END PLUMED */
-
- // do_force(fplog, cr, ms, inputrec, nullptr, nullptr, imdSession, pull_work, count, nrnb, wcycle,
- //          top, ems->s.box, ems->s.x.arrayRefWithPadding(), &ems->s.hist,
- //          ems->f.arrayRefWithPadding(), force_vir, mdAtoms->mdatoms(), enerd, fcd, ems->s.lambda,
- //          graph, fr, runScheduleWork, vsite, mu_tot, t, nullptr,
- //          GMX_FORCE_STATECHANGED | GMX_FORCE_ALLFORCES | GMX_FORCE_VIRIAL | GMX_FORCE_ENERGY 
     do_force(fplog, cr, ms, inputrec, nullptr, nullptr, imdSession, pull_work, count, nrnb, wcycle,
              top, ems->s.box, ems->s.x.arrayRefWithPadding(), &ems->s.hist, &ems->f.view(), force_vir,
              mdAtoms->mdatoms(), enerd, ems->s.lambda, fr, runScheduleWork, vsite, mu_tot, t, nullptr,
              GMX_FORCE_STATECHANGED | GMX_FORCE_ALLFORCES | GMX_FORCE_VIRIAL | GMX_FORCE_ENERGY
                      | (bNS ? GMX_FORCE_NS : 0),
              DDBalanceRegionHandler(cr));
-
-    /* PLUMED */
-#if (GMX_PLUMED)
-    if(plumedswitch){
-      if(plumedNeedsEnergy) {
-        msmul(force_vir,2.0,plumed_vir);
-        (*plumedcmd) (plumedmain,"setEnergy",&enerd->term[F_EPOT]);
-        (*plumedcmd) (plumedmain,"performCalc",NULL);
-        msmul(plumed_vir,0.5,force_vir);
-      } else {
-        msmul(plumed_vir,0.5,plumed_vir);
-        m_add(force_vir,plumed_vir,force_vir);
-      }
-    }
-#endif
-    /* END PLUMED */
 
     /* Clear the unused shake virial and pressure */
     clear_mat(shake_vir);
@@ -1192,13 +1091,7 @@ void LegacySimulator::do_cg()
 
     /* Init em and store the local state in s_min */
     init_em(fplog, mdlog, CG, cr, inputrec, imdSession, pull_work, state_global, top_global, s_min,
-            &top, nrnb, fr, mdAtoms, &gstat, vsite, constr, nullptr
-#if (GMX_PLUMED)
-            /* PLUMED */
-            , ms
-            /* END PLUMED */
-#endif
-            );
+            &top, nrnb, fr, mdAtoms, &gstat, vsite, constr, nullptr);
     const bool        simulationsShareState = false;
     gmx_mdoutf*       outf = init_mdoutf(fplog, nfile, fnm, mdrunOptions, cr, outputProvider,
                                    mdModulesNotifier, inputrec, top_global, nullptr, wcycle,
@@ -1814,13 +1707,7 @@ void LegacySimulator::do_lbfgs()
 
     /* Init em */
     init_em(fplog, mdlog, LBFGS, cr, inputrec, imdSession, pull_work, state_global, top_global,
-            &ems, &top, nrnb, fr, mdAtoms, &gstat, vsite, constr, nullptr
-#if (GMX_PLUMED)
-            /* PLUMED */
-            , ms
-            /* END PLUMED */
-#endif
-            );
+            &ems, &top, nrnb, fr, mdAtoms, &gstat, vsite, constr, nullptr);
     const bool        simulationsShareState = false;
     gmx_mdoutf*       outf = init_mdoutf(fplog, nfile, fnm, mdrunOptions, cr, outputProvider,
                                    mdModulesNotifier, inputrec, top_global, nullptr, wcycle,
@@ -2501,13 +2388,7 @@ void LegacySimulator::do_steep()
 
     /* Init em and store the local state in s_try */
     init_em(fplog, mdlog, SD, cr, inputrec, imdSession, pull_work, state_global, top_global, s_try,
-            &top, nrnb, fr, mdAtoms, &gstat, vsite, constr, nullptr
-#if (GMX_PLUMED)
-            /* PLUMED */
-            , ms
-            /* END PLUMED */
-#endif
-            );
+            &top, nrnb, fr, mdAtoms, &gstat, vsite, constr, nullptr);
     const bool        simulationsShareState = false;
     gmx_mdoutf*       outf = init_mdoutf(fplog, nfile, fnm, mdrunOptions, cr, outputProvider,
                                    mdModulesNotifier, inputrec, top_global, nullptr, wcycle,
@@ -2753,13 +2634,7 @@ void LegacySimulator::do_nm()
 
     /* Init em and store the local state in state_minimum */
     init_em(fplog, mdlog, NM, cr, inputrec, imdSession, pull_work, state_global, top_global,
-            &state_work, &top, nrnb, fr, mdAtoms, &gstat, vsite, constr, &shellfc
-#if (GMX_PLUMED)
-            /* PLUMED */
-            , ms
-            /* END PLUMED */
-#endif
-            );
+            &state_work, &top, nrnb, fr, mdAtoms, &gstat, vsite, constr, &shellfc);
     const bool  simulationsShareState = false;
     gmx_mdoutf* outf = init_mdoutf(fplog, nfile, fnm, mdrunOptions, cr, outputProvider,
                                    mdModulesNotifier, inputrec, top_global, nullptr, wcycle,

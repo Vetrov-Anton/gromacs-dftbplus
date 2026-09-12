@@ -42,7 +42,7 @@
  */
 #include "gmxpre.h"
 
-#include "testutils/testfilemanager.h"
+#include "testfilemanager.h"
 
 #include <cstdio>
 
@@ -214,8 +214,11 @@ std::string TestFileManager::getInputFilePath(const char* filename)
         // Assume file is in global directory for simulation input files.
         return Path::join(getTestSimulationDatabaseDirectory(), filename);
     }
-    // Assume file is present locally without full name (e.g. extension).
-    return Path::join(getInputDataDirectory(), filename);
+    else
+    {
+        // Assume file is present locally without full name (e.g. extension).
+        return Path::join(getInputDataDirectory(), filename);
+    }
 }
 
 std::string TestFileManager::getInputFilePath(const std::string& filename)

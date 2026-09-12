@@ -42,7 +42,7 @@
  */
 #include "gmxpre.h"
 
-#include "testutils/refdata.h"
+#include "refdata.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -64,13 +64,12 @@
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
 
+#include "testutils/refdata_checkers.h"
+#include "testutils/refdata_impl.h"
+#include "testutils/refdata_xml.h"
 #include "testutils/testasserts.h"
 #include "testutils/testexceptions.h"
 #include "testutils/testfilemanager.h"
-
-#include "refdata_checkers.h"
-#include "refdata_impl.h"
-#include "refdata_xml.h"
 
 namespace gmx
 {

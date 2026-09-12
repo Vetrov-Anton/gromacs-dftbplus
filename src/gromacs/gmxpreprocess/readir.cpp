@@ -4,7 +4,7 @@
  * Copyright (c) 1991-2000, University of Groningen, The Netherlands.
  * Copyright (c) 2001-2004, The GROMACS development team.
  * Copyright (c) 2013,2014,2015,2016,2017, The GROMACS development team.
- * Copyright (c) 2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2018,2019,2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -72,6 +72,7 @@
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/symtab.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
@@ -92,6 +93,8 @@
 #define MAXPTR 254
 #define NOGID 255
 
+using gmx::BasicVector;
+
 /* Resource parameters
  * Do not change any of these until you read the instruction
  * in readinp.h. Some cpp's do not take spaces after the backslash
@@ -111,8 +114,6 @@ struct gmx_inputrec_strings
     std::vector<std::string> pullGroupNames;
     std::vector<std::string> rotateGroupNames;
     char anneal[STRLEN], anneal_npoints[STRLEN], anneal_time[STRLEN], anneal_temp[STRLEN];
-    char QMmethod[STRLEN], QMbasis[STRLEN], QMcharge[STRLEN], QMmult[STRLEN], bSH[STRLEN],
-         CASorbitals[STRLEN], CASelectrons[STRLEN], SAon[STRLEN], SAoff[STRLEN], SAsteps[STRLEN];
 };
 
 static gmx_inputrec_strings* inputrecStrings = nullptr;
@@ -234,6 +235,105 @@ static void process_interaction_modifier(int* eintmod)
     }
 }
 
+static void checkMtsRequirement(const t_inputrec& ir, const char* param, const int nstValue, warninp_t wi)
+{
+    GMX_RELEASE_ASSERT(ir.mtsLevels.size() >= 2, "Need at least two levels for MTS");
+    const int mtsFactor = ir.mtsLevels.back().stepFactor;
+    if (nstValue % mtsFactor != 0)
+    {
+        auto message = gmx::formatString(
+                "With MTS, %s = %d should be a multiple of mts-factor = %d", param, nstValue, mtsFactor);
+        warning_error(wi, message.c_str());
+    }
+}
+
+static void setupMtsLevels(gmx::ArrayRef<gmx::MtsLevel> mtsLevels,
+                           const t_inputrec&            ir,
+                           const t_gromppopts&          opts,
+                           warninp_t                    wi)
+{
+    /* MD-VV has no MTS support yet.
+     * SD1 needs different scaling coefficients for the different MTS forces
+     * and the different forces are currently not available in ForceBuffers.
+     */
+    if (ir.eI != eiMD)
+    {
+        auto message = gmx::formatString(
+                "Multiple time stepping is only supported with integrator %s", ei_names[eiMD]);
+        warning_error(wi, message.c_str());
+    }
+    if (opts.numMtsLevels != 2)
+    {
+        warning_error(wi, "Only mts-levels = 2 is supported");
+    }
+    else
+    {
+        const std::vector<std::string> inputForceGroups = gmx::splitString(opts.mtsLevel2Forces);
+        auto&                          forceGroups      = mtsLevels[1].forceGroups;
+        for (const auto& inputForceGroup : inputForceGroups)
+        {
+            bool found     = false;
+            int  nameIndex = 0;
+            for (const auto& forceGroupName : gmx::mtsForceGroupNames)
+            {
+                if (gmx::equalCaseInsensitive(inputForceGroup, forceGroupName))
+                {
+                    forceGroups.set(nameIndex);
+                    found = true;
+                }
+                nameIndex++;
+            }
+            if (!found)
+            {
+                auto message =
+                        gmx::formatString("Unknown MTS force group '%s'", inputForceGroup.c_str());
+                warning_error(wi, message.c_str());
+            }
+        }
+
+        if (mtsLevels[1].stepFactor <= 1)
+        {
+            gmx_fatal(FARGS, "mts-factor should be larger than 1");
+        }
+
+        // Make the level 0 use the complement of the force groups of group 1
+        mtsLevels[0].forceGroups = ~mtsLevels[1].forceGroups;
+        mtsLevels[0].stepFactor  = 1;
+
+        if ((EEL_FULL(ir.coulombtype) || EVDW_PME(ir.vdwtype))
+            && !mtsLevels[1].forceGroups[static_cast<int>(gmx::MtsForceGroups::LongrangeNonbonded)])
+        {
+            warning_error(wi,
+                          "With long-range electrostatics and/or LJ treatment, the long-range part "
+                          "has to be part of the mts-level2-forces");
+        }
+
+        if (ir.nstcalcenergy > 0)
+        {
+            checkMtsRequirement(ir, "nstcalcenergy", ir.nstcalcenergy, wi);
+        }
+        checkMtsRequirement(ir, "nstenergy", ir.nstenergy, wi);
+        checkMtsRequirement(ir, "nstlog", ir.nstlog, wi);
+        if (ir.efep != efepNO)
+        {
+            checkMtsRequirement(ir, "nstdhdl", ir.fepvals->nstdhdl, wi);
+        }
+
+        if (ir.bPull)
+        {
+            const int pullMtsLevel = gmx::forceGroupMtsLevel(ir.mtsLevels, gmx::MtsForceGroups::Pull);
+            if (ir.pull->nstxout % ir.mtsLevels[pullMtsLevel].stepFactor != 0)
+            {
+                warning_error(wi, "pull-nstxout should be a multiple of mts-factor");
+            }
+            if (ir.pull->nstfout % ir.mtsLevels[pullMtsLevel].stepFactor != 0)
+            {
+                warning_error(wi, "pull-nstfout should be a multiple of mts-factor");
+            }
+        }
+    }
+}
+
 void check_ir(const char*                   mdparin,
               const gmx::MdModulesNotifier& mdModulesNotifier,
               t_inputrec*                   ir,
@@ -256,19 +356,6 @@ void check_ir(const char*                   mdparin,
     t_expanded* expand = ir->expandedvals;
 
     set_warning_line(wi, mdparin, -1);
-
-    /* We cannot check MTS requirements with an invalid MTS setup
-     * and we will already have generated errors with an invalid MTS setup.
-     */
-    if (gmx::haveValidMtsSetup(*ir))
-    {
-        std::vector<std::string> errorMessages = gmx::checkMtsRequirements(*ir);
-
-        for (const auto& errorMessage : errorMessages)
-        {
-            warning_error(wi, errorMessage.c_str());
-        }
-    }
 
     if (ir->coulombtype == eelRF_NEC_UNSUPPORTED)
     {
@@ -1903,17 +1990,17 @@ void get_ir(const char*     mdparin,
     ir->useMts = (get_eeenum(&inp, "mts", yesno_names, wi) != 0);
     if (ir->useMts)
     {
-        gmx::GromppMtsOpts& mtsOpts = opts->mtsOpts;
-        mtsOpts.numLevels           = get_eint(&inp, "mts-levels", 2, wi);
+        opts->numMtsLevels = get_eint(&inp, "mts-levels", 2, wi);
         ir->mtsLevels.resize(2);
-        mtsOpts.level2Forces = setStringEntry(&inp, "mts-level2-forces",
-                                              "longrange-nonbonded nonbonded pair dihedral");
-        mtsOpts.level2Factor = get_eint(&inp, "mts-level2-factor", 2, wi);
+        gmx::MtsLevel& mtsLevel = ir->mtsLevels[1];
+        opts->mtsLevel2Forces   = setStringEntry(&inp, "mts-level2-forces", "longrange-nonbonded");
+        mtsLevel.stepFactor     = get_eint(&inp, "mts-level2-factor", 2, wi);
 
         // We clear after reading without dynamics to not force the user to remove MTS mdp options
         if (!EI_DYNAMICS(ir->eI))
         {
             ir->useMts = false;
+            ir->mtsLevels.clear();
         }
     }
     printStringNoNewline(&inp, "mode for center of mass motion removal");
@@ -2056,21 +2143,8 @@ void get_ir(const char*     mdparin,
     /* QMMM */
     printStringNewline(&inp, "OPTIONS FOR QMMM calculations");
     ir->bQMMM = (get_eeenum(&inp, "QMMM", yesno_names, wi) != 0);
-    printStringNoNewline(&inp, "Groups treated with quantum chemistry");
+    printStringNoNewline(&inp, "Groups treated with MiMiC");
     setStringEntry(&inp, "QMMM-grps", inputrecStrings->QMMM, nullptr);
-    printStringNoNewline(&inp, "QM method");
-    setStringEntry(&inp, "QMmethod", inputrecStrings->QMmethod, nullptr);
-    printStringNoNewline(&inp, "QM basisset");
-    setStringEntry(&inp, "QMbasis", inputrecStrings->QMbasis, nullptr);
-    printStringNoNewline(&inp, "QM charge");
-    setStringEntry(&inp, "QMcharge", inputrecStrings->QMcharge, nullptr);
-    printStringNoNewline(&inp, "QM multiplicity");
-    setStringEntry(&inp, "QMmult", inputrecStrings->QMmult, nullptr);
-    printStringNoNewline(&inp, "CAS space options");
-    setStringEntry(&inp, "CASorbitals", inputrecStrings->CASorbitals, nullptr);
-    setStringEntry(&inp, "CASelectrons", inputrecStrings->CASelectrons, nullptr);
-    printStringNoNewline(&inp, "Scale factor for MM charges");
-    ir->scalefactor = get_ereal(&inp, "MMChargeScaleFactor", 1.0, wi);
 
     /* Simulated annealing */
     printStringNewline(&inp, "SIMULATED ANNEALING");
@@ -2681,13 +2755,7 @@ void get_ir(const char*     mdparin,
     /* Set up MTS levels, this needs to happen before checking AWH parameters */
     if (ir->useMts)
     {
-        std::vector<std::string> errorMessages;
-        ir->mtsLevels = gmx::setupMtsLevels(opts->mtsOpts, &errorMessages);
-
-        for (const auto& errorMessage : errorMessages)
-        {
-            warning_error(wi, errorMessage.c_str());
-        }
+        setupMtsLevels(ir->mtsLevels, *ir, *opts, wi);
     }
 
     if (ir->bDoAwh)
@@ -2698,22 +2766,6 @@ void get_ir(const char*     mdparin,
     sfree(dumstr[0]);
     sfree(dumstr[1]);
 }
-
-static int search_QMstring(const char* s, int ng, const char* gn[])
-{
-    /* same as normal search_string, but this one searches QM strings */
-    int i;
-
-    for (i = 0; (i < ng); i++)
-    {
-        if (gmx_strcasecmp(s, gn[i]) == 0)
-        {
-            return i;
-        }
-    }
-
-    gmx_fatal(FARGS, "this QM method or basisset (%s) is not implemented\n!", s);
-} /* search_QMstring */
 
 /* We would like gn to be const as well, but C doesn't allow this */
 /* TODO this is utility functionality (search for the index of a
@@ -2739,6 +2791,21 @@ int search_string(const char* s, int ng, char* gn[])
               s);
 }
 
+static void atomGroupRangeValidation(int natoms, int groupIndex, const t_blocka& block)
+{
+    /* Now go over the atoms in the group */
+    for (int j = block.index[groupIndex]; (j < block.index[groupIndex + 1]); j++)
+    {
+        int aj = block.a[j];
+
+        /* Range checking */
+        if ((aj < 0) || (aj >= natoms))
+        {
+            gmx_fatal(FARGS, "Invalid atom number %d in indexfile", aj + 1);
+        }
+    }
+}
+
 static void do_numbering(int                        natoms,
                          SimulationGroups*          groups,
                          gmx::ArrayRef<std::string> groupsFromMdpFile,
@@ -2752,7 +2819,7 @@ static void do_numbering(int                        natoms,
 {
     unsigned short*   cbuf;
     AtomGroupIndices* grps = &(groups->groups[gtype]);
-    int               j, gid, aj, ognr, ntot = 0;
+    int               ntot = 0;
     const char*       title;
     char              warn_buf[STRLEN];
 
@@ -2768,25 +2835,19 @@ static void do_numbering(int                        natoms,
     for (int i = 0; i != groupsFromMdpFile.ssize(); ++i)
     {
         /* Lookup the group name in the block structure */
-        gid = search_string(groupsFromMdpFile[i].c_str(), block->nr, gnames);
+        const int gid = search_string(groupsFromMdpFile[i].c_str(), block->nr, gnames);
         if ((grptp != egrptpONE) || (i == 0))
         {
             grps->emplace_back(gid);
         }
-
+        GMX_ASSERT(block, "Can't have a nullptr block");
+        atomGroupRangeValidation(natoms, gid, *block);
         /* Now go over the atoms in the group */
-        for (j = block->index[gid]; (j < block->index[gid + 1]); j++)
+        for (int j = block->index[gid]; (j < block->index[gid + 1]); j++)
         {
-
-            aj = block->a[j];
-
-            /* Range checking */
-            if ((aj < 0) || (aj >= natoms))
-            {
-                gmx_fatal(FARGS, "Invalid atom number %d in indexfile", aj + 1);
-            }
+            const int aj = block->a[j];
             /* Lookup up the old group number */
-            ognr = cbuf[aj];
+            const int ognr = cbuf[aj];
             if (ognr != NOGID)
             {
                 gmx_fatal(FARGS, "Atom %d in multiple %s groups (%d and %d)", aj + 1, title,
@@ -2821,7 +2882,7 @@ static void do_numbering(int                        natoms,
             warning_note(wi, warn_buf);
         }
         /* Assign all atoms currently unassigned to a rest group */
-        for (j = 0; (j < natoms); j++)
+        for (int j = 0; (j < natoms); j++)
         {
             if (cbuf[j] == NOGID)
             {
@@ -2839,7 +2900,7 @@ static void do_numbering(int                        natoms,
             grps->emplace_back(restnm);
 
             /* Assign the rest name to all atoms not currently assigned to a group */
-            for (j = 0; (j < natoms); j++)
+            for (int j = 0; (j < natoms); j++)
             {
                 if (cbuf[j] == NOGID)
                 {
@@ -3705,6 +3766,14 @@ void do_index(const char*                   mdparin,
 
     if (ir->bPull)
     {
+        for (int i = 1; i < ir->pull->ngroup; i++)
+        {
+            const int gid = search_string(inputrecStrings->pullGroupNames[i].c_str(),
+                                          defaultIndexGroups->nr, gnames);
+            GMX_ASSERT(defaultIndexGroups, "Must have initialized default index groups");
+            atomGroupRangeValidation(natoms, gid, *defaultIndexGroups);
+        }
+
         process_pull_groups(ir->pull->group, inputrecStrings->pullGroupNames, defaultIndexGroups, gnames);
 
         checkPullCoords(ir->pull->group, ir->pull->coord);
@@ -3962,84 +4031,84 @@ static void check_disre(const gmx_mtop_t* mtop)
     }
 }
 
-static bool absolute_reference(const t_inputrec* ir, const gmx_mtop_t* sys, const bool posres_only, ivec AbsRef)
+//! Returns whether dimensions have an absolute reference due to walls, pbc or freezing
+static BasicVector<bool> haveAbsoluteReference(const t_inputrec& ir)
 {
-    int                  d, g, i;
-    gmx_mtop_ilistloop_t iloop;
-    int                  nmol;
-    const t_iparams*     pr;
+    BasicVector<bool> absRef = { false, false, false };
 
-    clear_ivec(AbsRef);
-
-    if (!posres_only)
+    /* Check the degrees of freedom of the COM (not taking COMM removal into account) */
+    for (int d = 0; d < DIM; d++)
     {
-        /* Check the COM */
-        for (d = 0; d < DIM; d++)
+        absRef[d] = (d >= ndof_com(&ir));
+    }
+    /* Check for freeze groups */
+    for (int g = 0; g < ir.opts.ngfrz; g++)
+    {
+        for (int d = 0; d < DIM; d++)
         {
-            AbsRef[d] = (d < ndof_com(ir) ? 0 : 1);
-        }
-        /* Check for freeze groups */
-        for (g = 0; g < ir->opts.ngfrz; g++)
-        {
-            for (d = 0; d < DIM; d++)
+            if (ir.opts.nFreeze[g][d] != 0)
             {
-                if (ir->opts.nFreeze[g][d] != 0)
-                {
-                    AbsRef[d] = 1;
-                }
+                absRef[d] = true;
             }
         }
     }
 
-    /* Check for position restraints */
-    iloop = gmx_mtop_ilistloop_init(sys);
+    return absRef;
+}
+
+//! Returns whether position restraints are used for dimensions
+static BasicVector<bool> havePositionRestraints(const gmx_mtop_t& sys)
+{
+    BasicVector<bool> havePosres = { false, false, false };
+
+    gmx_mtop_ilistloop_t iloop = gmx_mtop_ilistloop_init(&sys);
+    int                  nmol;
     while (const InteractionLists* ilist = gmx_mtop_ilistloop_next(iloop, &nmol))
     {
-        if (nmol > 0 && (AbsRef[XX] == 0 || AbsRef[YY] == 0 || AbsRef[ZZ] == 0))
+        if (nmol > 0 && (!havePosres[XX] || !havePosres[YY] || !havePosres[ZZ]))
         {
-            for (i = 0; i < (*ilist)[F_POSRES].size(); i += 2)
+            for (int i = 0; i < (*ilist)[F_POSRES].size(); i += 2)
             {
-                pr = &sys->ffparams.iparams[(*ilist)[F_POSRES].iatoms[i]];
-                for (d = 0; d < DIM; d++)
+                const t_iparams& pr = sys.ffparams.iparams[(*ilist)[F_POSRES].iatoms[i]];
+                for (int d = 0; d < DIM; d++)
                 {
-                    if (pr->posres.fcA[d] != 0)
+                    if (pr.posres.fcA[d] != 0)
                     {
-                        AbsRef[d] = 1;
+                        havePosres[d] = true;
                     }
                 }
             }
-            for (i = 0; i < (*ilist)[F_FBPOSRES].size(); i += 2)
+            for (int i = 0; i < (*ilist)[F_FBPOSRES].size(); i += 2)
             {
                 /* Check for flat-bottom posres */
-                pr = &sys->ffparams.iparams[(*ilist)[F_FBPOSRES].iatoms[i]];
-                if (pr->fbposres.k != 0)
+                const t_iparams& pr = sys.ffparams.iparams[(*ilist)[F_FBPOSRES].iatoms[i]];
+                if (pr.fbposres.k != 0)
                 {
-                    switch (pr->fbposres.geom)
+                    switch (pr.fbposres.geom)
                     {
-                        case efbposresSPHERE: AbsRef[XX] = AbsRef[YY] = AbsRef[ZZ] = 1; break;
-                        case efbposresCYLINDERX: AbsRef[YY] = AbsRef[ZZ] = 1; break;
-                        case efbposresCYLINDERY: AbsRef[XX] = AbsRef[ZZ] = 1; break;
+                        case efbposresSPHERE: havePosres = { true, true, true }; break;
+                        case efbposresCYLINDERX: havePosres[YY] = havePosres[ZZ] = true; break;
+                        case efbposresCYLINDERY: havePosres[XX] = havePosres[ZZ] = true; break;
                         case efbposresCYLINDER:
                         /* efbposres is a synonym for efbposresCYLINDERZ for backwards compatibility */
-                        case efbposresCYLINDERZ: AbsRef[XX] = AbsRef[YY] = 1; break;
+                        case efbposresCYLINDERZ: havePosres[XX] = havePosres[YY] = true; break;
                         case efbposresX: /* d=XX */
                         case efbposresY: /* d=YY */
                         case efbposresZ: /* d=ZZ */
-                            d         = pr->fbposres.geom - efbposresX;
-                            AbsRef[d] = 1;
+                            havePosres[pr.fbposres.geom - efbposresX] = true;
                             break;
                         default:
                             gmx_fatal(FARGS,
-                                      " Invalid geometry for flat-bottom position restraint.\n"
+                                      "Invalid geometry for flat-bottom position restraint.\n"
                                       "Expected nr between 1 and %d. Found %d\n",
-                                      efbposresNR - 1, pr->fbposres.geom);
+                                      efbposresNR - 1, pr.fbposres.geom);
                     }
                 }
             }
         }
     }
 
-    return (AbsRef[XX] != 0 && AbsRef[YY] != 0 && AbsRef[ZZ] != 0);
+    return havePosres;
 }
 
 static void check_combination_rule_differences(const gmx_mtop_t* mtop,
@@ -4172,10 +4241,15 @@ static void check_combination_rules(const t_inputrec* ir, const gmx_mtop_t* mtop
     }
 }
 
+static bool allTrue(const BasicVector<bool>& boolVector)
+{
+    return boolVector[0] && boolVector[1] && boolVector[2];
+}
+
 void triple_check(const char* mdparin, t_inputrec* ir, gmx_mtop_t* sys, warninp_t wi)
 {
     // Not meeting MTS requirements should have resulted in a fatal error, so we can assert here
-    GMX_ASSERT(gmx::checkMtsRequirements(*ir).empty(), "All MTS requirements should be met here");
+    gmx::assertMtsRequirements(*ir);
 
     char                      err_buf[STRLEN];
     int                       i, m, c, nmol;
@@ -4183,12 +4257,11 @@ void triple_check(const char* mdparin, t_inputrec* ir, gmx_mtop_t* sys, warninp_
     real *                    mgrp, mt;
     rvec                      acc;
     gmx_mtop_atomloop_block_t aloopb;
-    ivec                      AbsRef;
     char                      warn_buf[STRLEN];
 
     set_warning_line(wi, mdparin, -1);
 
-    if (absolute_reference(ir, sys, false, AbsRef))
+    if (ir->comm_mode != ecmNO && allTrue(havePositionRestraints(*sys)))
     {
         warning_note(wi,
                      "Removing center of mass motion in the presence of position restraints might "
@@ -4274,7 +4347,8 @@ void triple_check(const char* mdparin, t_inputrec* ir, gmx_mtop_t* sys, warninp_
     }
 
     if (EI_DYNAMICS(ir->eI) && !EI_SD(ir->eI) && ir->eI != eiBD && ir->comm_mode == ecmNO
-        && !(absolute_reference(ir, sys, FALSE, AbsRef) || ir->nsteps <= 10) && !ETC_ANDERSEN(ir->etc))
+        && !(allTrue(haveAbsoluteReference(*ir)) || allTrue(havePositionRestraints(*sys)) || ir->nsteps <= 10)
+        && !ETC_ANDERSEN(ir->etc))
     {
         warning(wi,
                 "You are not using center of mass motion removal (mdp option comm-mode), numerical "
@@ -4302,11 +4376,11 @@ void triple_check(const char* mdparin, t_inputrec* ir, gmx_mtop_t* sys, warninp_
     /* Check for pressure coupling with absolute position restraints */
     if (ir->epc != epcNO && ir->refcoord_scaling == erscNO)
     {
-        absolute_reference(ir, sys, TRUE, AbsRef);
+        const BasicVector<bool> havePosres = havePositionRestraints(*sys);
         {
             for (m = 0; m < DIM; m++)
             {
-                if (AbsRef[m] && norm2(ir->compress[m]) > 0)
+                if (havePosres[m] && norm2(ir->compress[m]) > 0)
                 {
                     warning(wi,
                             "You are using pressure coupling with absolute position restraints, "
@@ -4433,10 +4507,11 @@ void triple_check(const char* mdparin, t_inputrec* ir, gmx_mtop_t* sys, warninp_
         {
             if (ir->pull->coord[i].group[0] == 0 || ir->pull->coord[i].group[1] == 0)
             {
-                absolute_reference(ir, sys, FALSE, AbsRef);
+                const auto absRef     = haveAbsoluteReference(*ir);
+                const auto havePosres = havePositionRestraints(*sys);
                 for (m = 0; m < DIM; m++)
                 {
-                    if (ir->pull->coord[i].dim[m] && !AbsRef[m])
+                    if (ir->pull->coord[i].dim[m] && !(absRef[m] || havePosres[m]))
                     {
                         warning(wi,
                                 "You are using an absolute reference for pulling, but the rest of "

@@ -739,7 +739,7 @@ int gmx_pmeonly(struct gmx_pme_t*               pme,
                        pme_pp->sigmaB.data(), box, cr, maxshift_x, maxshift_y, mynrnb, wcycle,
                        output.coulombVirial_, output.lennardJonesVirial_, &output.coulombEnergy_,
                        &output.lennardJonesEnergy_, lambda_q, lambda_lj, &dvdlambda_q,
-                       &dvdlambda_lj, stepWork, FALSE, FALSE, 0, nullptr);
+                       &dvdlambda_lj, stepWork);
             output.forces_ = pme_pp->f;
         }
 

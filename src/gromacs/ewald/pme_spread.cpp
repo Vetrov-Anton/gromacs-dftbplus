@@ -928,7 +928,6 @@ void spread_on_grid(const gmx_pme_t*  pme,
                 make_bsplines(spline->theta.coefficients, spline->dtheta.coefficients,
                               pme->pme_order, as_rvec_array(atc->fractx.data()), spline->n,
                               spline->ind.data(), atc->coefficient.data(), bDoSplines);
-                /* With QM/MM, create splines also on QM atoms - which carry no charge. */
             }
 
             if (bSpread)
@@ -1004,4 +1003,3 @@ void spread_on_grid(const gmx_pme_t*  pme,
     }
 #endif
 }
-

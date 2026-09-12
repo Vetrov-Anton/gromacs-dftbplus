@@ -117,7 +117,6 @@ public:
     unique_cptr<warninp, free_warning> wiGuard_;
 };
 
-/*
 TEST_F(GetIrTest, HandlesDifferentKindsOfMdpLines)
 {
     const char* inputMdpFile[] = { "; File to run my simulation",
@@ -135,7 +134,6 @@ TEST_F(GetIrTest, HandlesDifferentKindsOfMdpLines)
                                    "integrator = steep" };
     runTest(joinStrings(inputMdpFile, "\n"));
 }
-*/
 
 TEST_F(GetIrTest, RejectsNonCommentLineWithNoEquals)
 {
@@ -143,14 +141,12 @@ TEST_F(GetIrTest, RejectsNonCommentLineWithNoEquals)
     GMX_EXPECT_DEATH_IF_SUPPORTED(runTest(inputMdpFile), "No '=' to separate");
 }
 
-/*
 TEST_F(GetIrTest, AcceptsKeyWithoutValue)
 {
     // Users are probably using lines like this
     const char* inputMdpFile = "xtc_grps = ";
     runTest(inputMdpFile);
 }
-*/
 
 TEST_F(GetIrTest, RejectsValueWithoutKey)
 {
@@ -165,7 +161,6 @@ TEST_F(GetIrTest, RejectsEmptyKeyAndEmptyValue)
                                   "No .mdp parameter name or value was found");
 }
 
-/*
 TEST_F(GetIrTest, AcceptsDefineParametersWithValuesIncludingAssignment)
 {
     const char* inputMdpFile[] = {
@@ -173,17 +168,13 @@ TEST_F(GetIrTest, AcceptsDefineParametersWithValuesIncludingAssignment)
     };
     runTest(joinStrings(inputMdpFile, "\n"));
 }
-*/
 
-/*
 TEST_F(GetIrTest, AcceptsEmptyLines)
 {
     const char* inputMdpFile = "";
     runTest(inputMdpFile);
 }
-*/
 
-/*
 // These tests observe how the electric-field keys behave, since they
 // are currently the only ones using the new Options-style handling.
 TEST_F(GetIrTest, AcceptsElectricField)
@@ -203,7 +194,6 @@ TEST_F(GetIrTest, AcceptsElectricFieldOscillating)
     const char* inputMdpFile = "electric-field-z = 3.7 7.5 0 0";
     runTest(inputMdpFile);
 }
-*/
 
 TEST_F(GetIrTest, RejectsDuplicateOldAndNewKeys)
 {
@@ -212,13 +202,11 @@ TEST_F(GetIrTest, RejectsDuplicateOldAndNewKeys)
                                   "A parameter is present with both");
 }
 
-/*
 TEST_F(GetIrTest, AcceptsImplicitSolventNo)
 {
     const char* inputMdpFile = "implicit-solvent = no";
     runTest(inputMdpFile);
 }
-*/
 
 TEST_F(GetIrTest, RejectsImplicitSolventYes)
 {
@@ -226,13 +214,11 @@ TEST_F(GetIrTest, RejectsImplicitSolventYes)
     GMX_EXPECT_DEATH_IF_SUPPORTED(runTest(inputMdpFile), "Invalid enum");
 }
 
-/*
 TEST_F(GetIrTest, AcceptsMimic)
 {
     const char* inputMdpFile[] = { "integrator = mimic", "QMMM-grps = QMatoms" };
     runTest(joinStrings(inputMdpFile, "\n"));
 }
-*/
 
 } // namespace test
 } // namespace gmx

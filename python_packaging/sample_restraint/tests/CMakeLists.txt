@@ -1,47 +1,3 @@
-if(DOWNLOAD_GOOGLETEST)
-    # Download and unpack googletest at configure time
-    configure_file(CMakeLists.gtest.in googletest-download/CMakeLists.txt)
-    execute_process(COMMAND ${CMAKE_COMMAND} -G "${CMAKE_GENERATOR}" .
-                    RESULT_VARIABLE result
-                    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/googletest-download)
-    if(result)
-        message(WARNING "CMake step for googletest failed: ${result}")
-        #    message(FATAL_ERROR "CMake step for googletest failed: ${result}")
-    endif()
-    execute_process(COMMAND ${CMAKE_COMMAND} --build .
-                    RESULT_VARIABLE result
-                    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/googletest-download)
-    if(result)
-        message(WARNING "Build step for googletest failed: ${result}")
-        #    message(FATAL_ERROR "Build step for googletest failed: ${result}")
-    endif()
-
-    # Add googletest directly to our build. This defines
-    # the gtest and gtest_main targets.
-    add_subdirectory(${CMAKE_CURRENT_BINARY_DIR}/googletest-src
-                     ${CMAKE_CURRENT_BINARY_DIR}/googletest-build
-                     EXCLUDE_FROM_ALL)
-    add_library(GTest::GTest ALIAS gtest)
-    add_library(GTest::Main ALIAS gtest_main)
-else()
-    if(GMXAPI_EXTENSION_MASTER_PROJECT)
-        find_package(GTest REQUIRED)
-    else() # building as part of a GROMACS build...
-        if(TARGET gtest)
-            add_library(GTest::GTest ALIAS gtest)
-            add_library(GTest::Main ALIAS gtest_main)
-        else()
-            find_package(GTest)
-        endif()
-        if(NOT TARGET GTest::GTest)
-            message(FATAL_ERROR "GTest::GTest target should have been supplied by the parent project.")
-        endif()
-        if(NOT TARGET GTest::Main)
-            message(FATAL_ERROR "GTest::Main target should have been supplied by the parent project.")
-        endif()
-    endif()
-endif() # DOWNLOAD_GOOGLETEST
-
 #
 # Set up our tests
 #
@@ -97,7 +53,7 @@ configure_file(testingconfiguration.in.h testingconfiguration.h)
 add_executable(gmxapi_extension_library-test test_binding.cpp)
 add_dependencies(gmxapi_extension_library-test gmxapi_extension_spc2_water_box)
 target_include_directories(gmxapi_extension_library-test PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(gmxapi_extension_library-test Gromacs::libgromacs Gromacs::gmxapi GTest::Main)
+target_link_libraries(gmxapi_extension_library-test Gromacs::gmxapi GTest::Main)
 gtest_add_tests(TARGET gmxapi_extension_library-test
                 TEST_LIST BasicPlugin)
 

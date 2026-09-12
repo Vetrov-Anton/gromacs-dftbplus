@@ -37,7 +37,7 @@
  */
 #include "gmxpre.h"
 
-#include "gromacs/fileio/pdbio.h"
+#include "pdbio.h"
 
 #include <cctype>
 #include <cmath>

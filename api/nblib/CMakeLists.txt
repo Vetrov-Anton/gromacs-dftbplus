@@ -1,7 +1,7 @@
 #
 # This file is part of the GROMACS molecular simulation package.
 #
-# Copyright (c) 2020, by the GROMACS development team, led by
+# Copyright (c) 2020,2021, by the GROMACS development team, led by
 # Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
 # and including many others, as listed in the AUTHORS file in the
 # top-level source directory and at http://www.gromacs.org.
@@ -31,7 +31,7 @@
 #
 # To help us fund GROMACS development, we humbly ask that you cite
 # the research papers on the package. Check out http://www.gromacs.org.
-#
+
 # \author Victor Holanda <victor.holanda@cscs.ch>
 # \author Joe Jordan <ejjordan@kth.se>
 # \author Prashanth Kanduri <kanduri@cscs.ch>
@@ -71,11 +71,21 @@ if (BUILD_TESTING)
     include(${TESTUTILS_DIR}/TestMacros.cmake)
 endif()
 
-# this allows all nblib tests to be run with "make check-nblib"
-add_custom_target(check-nblib
-        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R NbLib
-        COMMENT "Running nblib tests"
-        USES_TERMINAL VERBATIM)
+add_custom_target(nblib-tests
+        COMMENT "Target to build all nblib tests including samples"
+        )
+# Ensure that "make tests" builds all nblib tests so the top-level
+# "make check" will work.
+if (BUILD_TESTING)
+	add_dependencies(tests nblib-tests)
+
+	# this allows all nblib tests to be run with "make check-nblib"
+	add_custom_target(check-nblib
+		COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R NbLib
+		COMMENT "Running nblib tests"
+		USES_TERMINAL VERBATIM)
+	add_dependencies(check-nblib nblib-tests)
+endif()
 
 set(NBLIB_MAJOR 0)
 set(NBLIB_MINOR 1)
@@ -100,6 +110,7 @@ target_sources(nblib
         integrator.cpp
         interactions.cpp
         molecules.cpp
+        particlesequencer.cpp
         particletype.cpp
         simulationstate.cpp
         topologyhelpers.cpp
@@ -111,11 +122,6 @@ gmx_target_compile_options(nblib)
 target_link_libraries(nblib PRIVATE libgromacs)
 target_include_directories(nblib PRIVATE ${PROJECT_SOURCE_DIR}/api)
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/api)
-target_link_libraries(nblib PRIVATE common)
-# There are transitive dependencies on the legacy GROMACS headers.
-target_link_libraries(nblib PUBLIC legacy_api)
-# TODO: Explicitly link specific modules.
-target_link_libraries(nblib PRIVATE legacy_modules)
 
 install(TARGETS nblib
         EXPORT nblib
@@ -136,11 +142,11 @@ if(GMX_INSTALL_NBLIB_API)
             molecules.h
             kerneloptions.h
             nblib.h
+            particlesequencer.h
             particletype.h
-            ppmap.h
             simulationstate.h
             topology.h
-            topologyhelpers.h
+            vector.h
             DESTINATION include/nblib)
 endif()
 

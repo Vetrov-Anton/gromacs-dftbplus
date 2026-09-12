@@ -372,8 +372,7 @@ void gather_f_bsplines(const gmx_pme_t*    pme,
 }
 
 
-real gather_energy_bsplines(gmx_pme_t* pme, const real* grid, PmeAtomComm* atc,
-                            int nrQMatoms, real *potential) /* nrQMatoms == 0 means no QM/MM */
+real gather_energy_bsplines(gmx_pme_t* pme, const real* grid, PmeAtomComm* atc)
 {
     splinedata_t* spline;
     int           ithx, ithy, ithz, i0, j0, k0;
@@ -389,14 +388,11 @@ real gather_energy_bsplines(gmx_pme_t* pme, const real* grid, PmeAtomComm* atc,
     order = pme->pme_order;
 
     energy = 0;
-    /* For QM/MM, do it only for QM atoms because
-     * we are not interested in the potential on MM atoms at this point.
-     */
-    for (int n = 0; (n < atc->numAtoms() && (nrQMatoms == 0 || n < nrQMatoms) ); n++)
+    for (int n = 0; n < atc->numAtoms(); n++)
     {
         coefficient = atc->coefficient[n];
 
-        if (coefficient != 0 || nrQMatoms > 0) /* For QM/MM, do not check the (MM) charge which is set to 0. */
+        if (coefficient != 0)
         {
             idxptr = atc->idx[n];
             norder = n * order;
@@ -430,13 +426,8 @@ real gather_energy_bsplines(gmx_pme_t* pme, const real* grid, PmeAtomComm* atc,
             }
 
             energy += pot * coefficient;
-            if (nrQMatoms > 0)
-            {
-                potential[n] = pot;
-            }
         }
     }
 
     return energy;
 }
-

@@ -2,7 +2,7 @@
  * This file is part of the GROMACS molecular simulation package.
  *
  * Copyright (c) 2020 Research Organization for Information Science and Technology (RIST).
- * Copyright (c) 2020, by the GROMACS development team, led by
+ * Copyright (c) 2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -349,7 +349,7 @@ static inline SimdDouble gmx_simdcall maskzRcp(SimdDouble x, SimdDBool m)
     // The result will always be correct since we mask the result with m, but
     // for debug builds we also want to make sure not to generate FP exceptions
 #ifndef NDEBUG
-    x.simdInternal_ = svsel_f64(m, x.simdInternal_, svdup_n_f64(1.0));
+    x.simdInternal_ = svsel_f64(pg, x.simdInternal_, svdup_n_f64(1.0));
 #endif
     return { svreinterpret_f64_u64(svand_n_u64_z(
             pg, svreinterpret_u64_f64(svrecpe_f64(x.simdInternal_)), 0xFFFFFFFFFFFFFFFF)) };
@@ -387,15 +387,23 @@ static inline SimdDouble gmx_simdcall frexp(SimdDouble value, SimdDInt32* expone
     svint64_t         iExponent;
 
     iExponent = svand_s64_x(pg, svreinterpret_s64_f64(value.simdInternal_), exponentMask);
-    // iExponent               = svsub_s64_x(pg, svlsr_n_s64_x(pg, iExponent, 52), exponentBias);
     iExponent = svsub_s64_x(
             pg, svreinterpret_s64_u64(svlsr_n_u64_x(pg, svreinterpret_u64_s64(iExponent), 52)), exponentBias);
 
-    exponent->simdInternal_ = iExponent;
 
-    return { svreinterpret_f64_s64(svorr_s64_x(
+    svfloat64_t result = svreinterpret_f64_s64(svorr_s64_x(
             pg, svand_s64_x(pg, svreinterpret_s64_f64(value.simdInternal_), mantissaMask),
-            svreinterpret_s64_f64(half))) };
+            svreinterpret_s64_f64(half)));
+
+    if (opt == MathOptimization::Safe)
+    {
+        svbool_t valueIsZero = svcmpeq_n_f64(pg, value.simdInternal_, 0.0);
+        iExponent            = svsel_s64(valueIsZero, svdup_s64(0), iExponent);
+        result               = svsel_f64(valueIsZero, value.simdInternal_, result);
+    }
+
+    exponent->simdInternal_ = iExponent;
+    return { result };
 }
 
 template<MathOptimization opt = MathOptimization::Safe>

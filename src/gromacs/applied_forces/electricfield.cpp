@@ -1,7 +1,8 @@
 /*
  * This file is part of the GROMACS molecular simulation package.
  *
- * Copyright (c) 2015,2016,2017,2018,2019,2020, by the GROMACS development team, led by
+ * Copyright (c) 2015,2016,2017,2018,2019, The GROMACS development team.
+ * Copyright (c) 2020,2021, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -94,6 +95,12 @@ public:
         section.addOption(RealOption("omega").store(&omega_));
         section.addOption(RealOption("t0").store(&t0_));
         section.addOption(RealOption("sigma").store(&sigma_));
+        if (sigma_ <= 0 && t0_ != 0.0)
+        {
+            GMX_THROW(
+                    InvalidInputError("Non-pulsed field (sigma = 0) ignores the value of t0. "
+                                      "Please, set t0 to 0 to avoid this error."));
+        }
     }
     /*! \brief
      * Creates mdp parameters for this field component.
@@ -313,7 +320,7 @@ void ElectricField::calculateForces(const ForceProviderInput& forceProviderInput
             if (fieldStrength != 0)
             {
                 // TODO: Check parallellism
-                for (index i = 0; i != ssize(f); ++i)
+                for (int i = 0; i < mdatoms.homenr; ++i)
                 {
                     // NOTE: Not correct with perturbed charges
                     f[i][m] += mdatoms.chargeA[i] * fieldStrength;
