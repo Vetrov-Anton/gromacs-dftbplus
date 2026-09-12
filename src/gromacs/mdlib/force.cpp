@@ -211,7 +211,8 @@ void calculateLongRangeNonbondeds(t_forcerec*                   fr,
                             DOMAINDECOMP(cr) ? dd_pme_maxshift_y(cr->dd) : 0, nrnb, wcycle,
                             ewaldOutput.vir_q, ewaldOutput.vir_lj, &Vlr_q, &Vlr_lj,
                             lambda[efptCOUL], lambda[efptVDW], &ewaldOutput.dvdl[efptCOUL],
-                            &ewaldOutput.dvdl[efptVDW], stepWork);
+                            &ewaldOutput.dvdl[efptVDW], stepWork,
+                            FALSE, FALSE, 0, nullptr);
                     wallcycle_stop(wcycle, ewcPMEMESH);
                     if (status != 0)
                     {

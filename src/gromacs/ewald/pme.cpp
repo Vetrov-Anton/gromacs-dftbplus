@@ -1590,7 +1590,8 @@ int gmx_pme_do(struct gmx_pme_t*              pme,
                         try
                         {
                             gather_f_bsplines(pme, grid, bClearF, &pme->atc[0],
-                                              &pme->atc[0].spline[thread], scale);
+                                              &pme->atc[0].spline[thread], scale,
+                                              FALSE, 0, FALSE);
                         }
                         GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
                     }

@@ -1349,6 +1349,14 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
             }
             j += (qm_nr + link_nr);
         }
+        if (blink[i])
+        {
+            for (int k = 0; k < qm_nr; k++)
+            {
+                qmexcl.a[k + j] = qm_arr[k];
+            }
+            j += qm_nr;
+        }
     }
     qmexcl.index[qmexcl.nr] = j;
 

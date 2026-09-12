@@ -94,6 +94,7 @@ MDAtoms::~MDAtoms()
     sfree(mdatoms_->bPerturbed);
     sfree(mdatoms_->cU1);
     sfree(mdatoms_->cU2);
+    sfree(mdatoms_->bQM);
 }
 
 void MDAtoms::resizeChargeA(const int newSize)
