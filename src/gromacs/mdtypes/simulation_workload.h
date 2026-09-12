@@ -77,6 +77,8 @@ public:
     bool computeEnergy = false;
     //! Whether (any) forces need to be computed this step, not only energies
     bool computeForces = false;
+    //! Whether PME elstat. potentials need to be computed this step -- for QM/MM
+    bool computePotentials = false;
     //! Whether nonbonded forces need to be computed this step
     bool computeNonbondedForces = false;
     //! Whether listed forces need to be computed this step
