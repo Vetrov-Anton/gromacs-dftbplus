@@ -22,10 +22,14 @@ From: ubuntu:26.04
     SRC=/opt/src                   # not /tmp: the host /tmp is bind-mounted
                                    # into the container during the build
     GROMACS_REPO=https://github.com/Vetrov-Anton/gromacs-dftbplus.git
-    GROMACS_BRANCH=main
+    GROMACS_BRANCH=sync-2021.7-full
     DFTBPLUS_VERSION=25.1          # any release with the modern C API (>= 23.1)
-    PLUMED_VERSION=2.10.1
-    LIBTORCH_VERSION=2.12.1        # PLUMED 2.10 requires torch >= 2.7
+    PLUMED_VERSION=2.9.5           # last PLUMED line that still ships the
+                                   # official patches/gromacs-2021.7 patch;
+                                   # 2.10 starts at gromacs-2022.5
+    LIBTORCH_VERSION=2.12.1        # UNVERIFIED against PLUMED 2.9.5 - this
+                                   # pairing was chosen for 2.10; set
+                                   # WITH_LIBTORCH=no if --enable-libtorch fails
     WITH_LIBTORCH=yes              # "no" skips libtorch and the pytorch CVs
     PLUMED_MODE=runtime            # runtime | shared  (runtime recommended)
     # -------------------------------------------------------------------
@@ -130,13 +134,16 @@ From: ubuntu:26.04
     # ------------------------------------------------------------------
     # 5. GROMACS
     #
-    #    The sources already carry the PLUMED integration, so `plumed patch`
-    #    must NOT be run.  Only the three files it would drop into the source
-    #    root are needed:
+    #    The PLUMED integration is installed by PLUMED's own `plumed patch`,
+    #    not by hand-maintained hooks in the sources.  The non-QM/MM part of
+    #    this tree is release GROMACS 2021.7, which is exactly what the
+    #    patches/gromacs-2021.7 patch expects, so it applies with no fuzz.
+    #    `plumed patch` also drops the three links into the source root:
     #      Plumed.h     - wrapper header, included as "../../../Plumed.h"
     #      Plumed.cmake - defines ${PLUMED_LOAD}, included by
-    #                     src/gromacs/CMakeLists.txt when GMX_PLUMED=ON
+    #                     src/gromacs/CMakeLists.txt
     #      Plumed.inc   - used only by the (unused) GNU-make build
+    #    Revert with: plumed patch -r -e gromacs-2021.7
     # ------------------------------------------------------------------
     cd ${SRC}
     rm -rf gromacs-dftbplus
@@ -144,28 +151,26 @@ From: ubuntu:26.04
     cd gromacs-dftbplus
     git log -1 --format='building %H (%ad)' --date=short
 
-    PLUMED_PREFIX=/opt/plumed
-    PLUMED_ROOT=${PLUMED_PREFIX}/lib/plumed
-    ln -fs ${PLUMED_PREFIX}/include/plumed/wrapper/Plumed.h   Plumed.h
-    ln -fs ${PLUMED_ROOT}/src/lib/Plumed.inc.${PLUMED_MODE}   Plumed.inc
-    ln -fs ${PLUMED_ROOT}/src/lib/Plumed.cmake.${PLUMED_MODE} Plumed.cmake
+    export PATH=/opt/plumed/bin:${PATH}
+    export LD_LIBRARY_PATH=/opt/plumed/lib:${LD_LIBRARY_PATH:-}
+    plumed patch -p -e gromacs-2021.7 -m ${PLUMED_MODE}
     test -e Plumed.h && test -e Plumed.inc && test -e Plumed.cmake
 
     mkdir -p build && cd build
-    # __PLUMED_WRAPPER_CXX_BIND_C=0: the QM/MM code takes the address of
-    # plumed_cmd, which from PLUMED 2.9 on is a macro for an overloaded C++
-    # template.  The flag restores the plain C symbol.
+    # No -D__PLUMED_WRAPPER_CXX_BIND_C=0 here: that flag was only needed by the
+    # hand-written integration, which assigned plumed_cmd to a plain C function
+    # pointer.  The official patch calls plumed_cmd directly, so the macro's
+    # C++ overload is fine.
     #
     # GMX_QMMM_DFTBPLUS_LIB is the DFTB+ install PREFIX, not <prefix>/lib.
     cmake .. \
         -DCMAKE_INSTALL_PREFIX=/opt/gmx \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CXX_FLAGS="-D__PLUMED_WRAPPER_CXX_BIND_C=0" \
         -DGMX_QMMM_PROGRAM=dftbplus \
         -DGMX_QMMM_DFTBPLUS_LIB=/opt/dftbplus \
-        -DGMX_PLUMED=ON \
         -DGMX_DOUBLE=ON \
         -DGMX_MPI=ON \
+        -DGMX_THREAD_MPI=OFF \
         -DGMX_OPENMP=ON \
         -DGMX_GPU=OFF \
         -DGMX_DEFAULT_SUFFIX=OFF \

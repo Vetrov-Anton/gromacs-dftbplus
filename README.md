@@ -26,8 +26,9 @@ is involved. With none of them set, the build behaves exactly like the original 
 ### GROMACS
 
 A single Apptainer/Singularity recipe ships with the repository. It builds DFTB+ 25.1 (with
-the API, tblite and s-dftd3), PLUMED 2.10 linked in runtime mode with libtorch, and this
-GROMACS in double precision with MPI, on Ubuntu 26.04:
+the API, tblite and s-dftd3), PLUMED 2.9.5 linked in runtime mode with libtorch, and this
+GROMACS in double precision with MPI, on Ubuntu 26.04. PLUMED is integrated by its own
+`plumed patch -e gromacs-2021.7`, not by hooks kept in these sources:
 
 ```bash
 apptainer build --fakeroot gmx_dftbplus.sif Install_gmx_dftb_plumed_torch.def

@@ -28,3 +28,10 @@ CMakeLists.txt.user
 Testing
 /.vs
 /CMakeSettings.json
+
+# Dropped in by `plumed patch` - machine-specific links and patch backups,
+# never committed: PLUMED is applied at build time, not carried in-tree.
+/Plumed.h
+/Plumed.inc
+/Plumed.cmake
+*.preplumed
