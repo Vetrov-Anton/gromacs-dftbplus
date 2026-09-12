@@ -150,9 +150,12 @@ if (GMX_QMMM_DFTBPLUS)
     list(APPEND CMAKE_PREFIX_PATH ${GMX_QMMM_DFTBPLUS_LIB})
     find_package(DftbPlus CONFIG REQUIRED)
 
+    # Plain signature, not PRIVATE: 2021.7 links these two executables with the
+    # plain form (lines 57 and 89) and CMake refuses to mix the two styles on
+    # one target.
     if(GMX_BUILD_MDRUN_ONLY)
-        target_link_libraries(mdrun PRIVATE DftbPlus::DftbPlus)
+        target_link_libraries(mdrun DftbPlus::DftbPlus)
     else()
-        target_link_libraries(gmx PRIVATE DftbPlus::DftbPlus)
+        target_link_libraries(gmx DftbPlus::DftbPlus)
     endif()
 endif()
