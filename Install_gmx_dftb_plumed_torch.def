@@ -254,8 +254,10 @@ From: ubuntu:24.04
         echo "WARNING: unexpected version string"
 
     gmx mdrun -h 2>&1 | grep -q -- '-plumed' && echo "OK: gmx mdrun has -plumed"
-    gmx mdrun -h 2>&1 | grep -q -- '-hrex' && \
-        echo "OK: gmx mdrun has -hrex (absent from the hand-written hooks)"
+    # -[no]hrex, not -hrex: that is how a boolean option is printed.
+    gmx mdrun -h 2>&1 | grep -q 'hrex' && \
+        echo "OK: gmx mdrun has -hrex (absent from the hand-written hooks)" || \
+        echo "WARNING: no -hrex in mdrun options"
 
     ldd /opt/gmx/lib/libgromacs.so | grep -qi dftb && echo "OK: libgromacs links DFTB+"
     ldd /opt/gmx/lib/libgromacs.so | grep -qi plumed && \
