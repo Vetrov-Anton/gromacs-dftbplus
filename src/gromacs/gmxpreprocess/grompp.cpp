@@ -1827,6 +1827,7 @@ int gmx_grompp(int argc, char* argv[])
     double                               reppow;
     const char*                          mdparin;
     bool                                 bNeedVel, bGenVel;
+    gmx_bool                             have_atomnumber;
     gmx_output_env_t*                    oenv;
     gmx_bool                             bVerbose = FALSE;
     warninp*                             wi;

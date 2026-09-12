@@ -114,6 +114,8 @@ struct gmx_inputrec_strings
     std::vector<std::string> pullGroupNames;
     std::vector<std::string> rotateGroupNames;
     char anneal[STRLEN], anneal_npoints[STRLEN], anneal_time[STRLEN], anneal_temp[STRLEN];
+    char QMmethod[STRLEN], QMbasis[STRLEN], QMcharge[STRLEN], QMmult[STRLEN], bSH[STRLEN],
+         CASorbitals[STRLEN], CASelectrons[STRLEN], SAon[STRLEN], SAoff[STRLEN], SAsteps[STRLEN];
 };
 
 static gmx_inputrec_strings* inputrecStrings = nullptr;
@@ -2143,8 +2145,21 @@ void get_ir(const char*     mdparin,
     /* QMMM */
     printStringNewline(&inp, "OPTIONS FOR QMMM calculations");
     ir->bQMMM = (get_eeenum(&inp, "QMMM", yesno_names, wi) != 0);
-    printStringNoNewline(&inp, "Groups treated with MiMiC");
+    printStringNoNewline(&inp, "Groups treated with quantum chemistry");
     setStringEntry(&inp, "QMMM-grps", inputrecStrings->QMMM, nullptr);
+    printStringNoNewline(&inp, "QM method");
+    setStringEntry(&inp, "QMmethod", inputrecStrings->QMmethod, nullptr);
+    printStringNoNewline(&inp, "QM basisset");
+    setStringEntry(&inp, "QMbasis", inputrecStrings->QMbasis, nullptr);
+    printStringNoNewline(&inp, "QM charge");
+    setStringEntry(&inp, "QMcharge", inputrecStrings->QMcharge, nullptr);
+    printStringNoNewline(&inp, "QM multiplicity");
+    setStringEntry(&inp, "QMmult", inputrecStrings->QMmult, nullptr);
+    printStringNoNewline(&inp, "CAS space options");
+    setStringEntry(&inp, "CASorbitals", inputrecStrings->CASorbitals, nullptr);
+    setStringEntry(&inp, "CASelectrons", inputrecStrings->CASelectrons, nullptr);
+    printStringNoNewline(&inp, "Scale factor for MM charges");
+    ir->scalefactor = get_ereal(&inp, "MMChargeScaleFactor", 1.0, wi);
 
     /* Simulated annealing */
     printStringNewline(&inp, "SIMULATED ANNEALING");
@@ -2766,6 +2781,22 @@ void get_ir(const char*     mdparin,
     sfree(dumstr[0]);
     sfree(dumstr[1]);
 }
+
+static int search_QMstring(const char* s, int ng, const char* gn[])
+{
+    /* same as normal search_string, but this one searches QM strings */
+    int i;
+
+    for (i = 0; (i < ng); i++)
+    {
+        if (gmx_strcasecmp(s, gn[i]) == 0)
+        {
+            return i;
+        }
+    }
+
+    gmx_fatal(FARGS, "this QM method or basisset (%s) is not implemented\n!", s);
+} /* search_QMstring */
 
 /* We would like gn to be const as well, but C doesn't allow this */
 /* TODO this is utility functionality (search for the index of a
