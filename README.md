@@ -228,9 +228,6 @@ Do not confuse any of this with `GMX_QMMM_NREXCL` (section 1): that acts in `mdr
 charges entering the QM Hamiltonian and never touches Lennard-Jones, whereas the `LJ-14`
 removal happens in `grompp` and is written into the `tpr`.
 
-A warning about QM atoms in several molecule types is now issued for the `amber` scheme too
-(previously only for `classic`).
-
 ---
 
 ## 3. QM/MM electrostatics variant (pre-existing, for reference)
@@ -348,19 +345,6 @@ all printed gradients over the QM and the MM block vanishes to round-off; with P
 does so approximately, to the accuracy of the mesh. And the third vector of a QM row must
 equal the sum of the first two, which is the only place where the two halves of the QM/MM
 gradient meet.
-
----
-
-## Choosing the settings
-
-* `GMX_QMMM_BONDED_SCHEME=classic` + `GMX_QMMM_NREXCL=0` reproduces the original code
-  exactly — use it to reproduce older results.
-* `GMX_QMMM_BONDED_SCHEME=amber` + `GMX_QMMM_NREXCL=3` is the AMBER-like combination: the
-  boundary geometry is held by the retained force-field terms, and the MM charges that the
-  force field would have excluded do not polarize the QM density either.
-* Mixing them (`classic` + `NREXCL=3`) is legitimate but means the boundary bonded terms are
-  described by the QM calculation while the close MM charges are screened out — check the
-  `grompp` table and know what you are asking for.
 
 ---
 
