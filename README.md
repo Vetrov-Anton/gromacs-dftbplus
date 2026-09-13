@@ -219,8 +219,10 @@ DFTB+ computes that interaction explicitly and the classical copy would double-c
 
 Where the schemes differ is the pair between a QM atom and the **MM atom covalently bonded
 to it** — MM1, the atom the boundary bond runs into: `classic` drops it, `amber` keeps it.
-MM1 is an ordinary force-field atom with its own Lennard-Jones parameters and its own
-charge, so neither half of the term vanishes and the choice changes real numbers.
+Only the Lennard-Jones half of such a pair contributes anything: `grompp` sets the charge of
+every QM atom to zero when it builds the QM region, so the 1-4 Coulomb term of a pair with a
+QM atom in it is zero under either scheme. The Lennard-Jones half is real — MM1 carries
+ordinary force-field parameters — and it is what makes the `LJ-14` row differ.
 
 Do not confuse any of this with `GMX_QMMM_NREXCL` (section 1): that acts in `mdrun` on the MM
 charges entering the QM Hamiltonian and never touches Lennard-Jones, whereas the `LJ-14`
@@ -240,7 +242,7 @@ A warning about QM atoms in several molecule types is now issued for the `amber`
 | `GMX_QMMM_VARIANT=2` | switched cut-off |
 | `GMX_QMMM_VARIANT=3` | reaction field |
 | `GMX_QMMM_VARIANT=4` | shifted cut-off |
-| `GMX_QMMM_PME_DIPCOR` | dipole (surface) correction for PME — currently disabled in the code, mdrun exits if set |
+| `GMX_QMMM_PME_DIPCOR` | dipole (surface) correction for PME — disabled in the code: with `GMX_QMMM_VARIANT=1` mdrun prints why and exits; with any other variant it is read and ignored |
 
 ---
 
