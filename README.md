@@ -171,8 +171,8 @@ this build lets you pick.
 
 | value | rule |
 |---|---|
-| `classic` (default) | a bonded term is removed as soon as **all but one** of its atoms are QM (so a QM–QM–MM angle and a QM–QM–QM–MM dihedral go), because the QM calculation with the link atom is assumed to describe it; in addition the nonbonded and 1-4 interactions of the QM atoms with the link atoms are excluded. This is the historical GROMACS behaviour. |
-| `amber` | only terms whose atoms are **all** QM are removed; every term with at least one MM atom is kept at the force-field level, and no exclusions involving link atoms are generated. Follows the QM/MM implementation of AMBER: the link atom is not the MM atom — different position, different mass — so its contribution is not equivalent to the force-field term, and the conformational behaviour of the boundary is better described by keeping the latter. |
+| `classic` (default) | a bonded term is removed as soon as **all but one** of its atoms are QM (so a QM–QM–MM angle and a QM–QM–QM–MM dihedral go), because the QM calculation with the link atom is assumed to describe it; in addition the nonbonded and 1-4 interactions of the QM atoms with the boundary MM atoms (MM1) are excluded. This is the historical GROMACS behaviour. |
+| `amber` | only terms whose atoms are **all** QM are removed; every term with at least one MM atom is kept at the force-field level, and no extra exclusions between QM atoms and the boundary MM atoms are generated. Follows the QM/MM implementation of AMBER: the hydrogen cap is not the MM atom it stands in for — different position, different mass — so its contribution is not equivalent to the force-field term, and the conformational behaviour of the boundary is better described by keeping the latter. |
 
 Unknown values are a fatal error. `amber` also raises a `grompp` note, since with a
 link-atom-capped QM region the QM contribution is then counted **on top of** the retained
@@ -212,14 +212,19 @@ With `classic` it is non-zero and the message instead points at `GMX_QMMM_BONDED
 Chemical bonds between two QM atoms are not lost but converted to connections
 (`F_CONNBONDS`).
 
-The `LJ-14` row counts `[ pairs ]` entries, and is worth three remarks. Each entry carries
-**both** the 1-4 Lennard-Jones and the 1-4 Coulomb term (`F_COUL14` has no list of its own),
-so removing one removes both. Pairs with both atoms QM are dropped under every scheme, since
+The `LJ-14` row counts `[ pairs ]` entries, and needs some care. Each entry carries **both**
+the 1-4 Lennard-Jones and the 1-4 Coulomb term (`F_COUL14` has no list of its own), so
+removing one removes both. Pairs with both atoms QM are dropped under every scheme, since
 DFTB+ computes that interaction explicitly and the classical copy would double-count it.
-Pairs between a QM atom and a link atom are where the schemes differ: `classic` drops them,
-`amber` keeps them. Do not confuse any of this with `GMX_QMMM_NREXCL` (section 1): that acts
-in `mdrun` on the MM charges entering the QM Hamiltonian and never touches Lennard-Jones,
-whereas the `LJ-14` removal happens in `grompp` and is written into the `tpr`.
+
+Where the schemes differ is the pair between a QM atom and the **MM atom covalently bonded
+to it** — MM1, the atom the boundary bond runs into: `classic` drops it, `amber` keeps it.
+MM1 is an ordinary force-field atom with its own Lennard-Jones parameters and its own
+charge, so neither half of the term vanishes and the choice changes real numbers.
+
+Do not confuse any of this with `GMX_QMMM_NREXCL` (section 1): that acts in `mdrun` on the MM
+charges entering the QM Hamiltonian and never touches Lennard-Jones, whereas the `LJ-14`
+removal happens in `grompp` and is written into the `tpr`.
 
 A warning about QM atoms in several molecule types is now issued for the `amber` scheme too
 (previously only for `classic`).
@@ -344,39 +349,7 @@ gradient meet.
 
 ---
 
-## Typical run
-
-```bash
-gmx() {
-apptainer run -B /home:/home --pwd $(pwd) /path/to/gmx_dftbplus.sif $@
-}
-```
-
-`GMX_QMMM_VARIANT=1`, `OMP_NUM_THREADS=1` and `GMX_QMMM_NREXCL=3` are already set inside the
-image; add `--env NAME=value` to override any of them for a single run.
-
-```bash
-gmx grompp -f qm.mdp -p qm.top -n qm.ndx -c qm.gro -o qw.tpr -r qm.gro -maxwarn 4
-
-gmx mdrun -deffnm qw -ntomp 1 -pin on -pinoffset 0 -v
-```
-
-with an `.mdp` containing
-
-```
-QMMM      = yes
-QMMM-grps = QM
-QMmethod  = RHF        ; grompp insists on a value, this build ignores it
-QMbasis   = STO-3G     ; likewise
-QMcharge  = -2         ; must equal Charge in dftb_in.hsd
-QMmult    = 1
-```
-
-`dftb_in.hsd` must sit in the run directory. mdrun reads it once and overwrites the
-coordinates every step, so the numbers in `Geometry` do not matter — but the atom **count**
-and **order** do.
-
-### Choosing the settings
+## Choosing the settings
 
 * `GMX_QMMM_BONDED_SCHEME=classic` + `GMX_QMMM_NREXCL=0` reproduces the original code
   exactly — use it to reproduce older results.
