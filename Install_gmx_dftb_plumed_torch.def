@@ -2,33 +2,19 @@ Bootstrap: docker
 From: ubuntu:24.04
 
 # ---------------------------------------------------------------------------
-# GROMACS 2021.7 with DFTB+ QM/MM and PLUMED.
+# GROMACS 2021.7 (double precision, OpenMPI) with DFTB+ QM/MM and PLUMED.
 #
 #   DFTB+    : QM/MM backend, located with find_package(DftbPlus CONFIG)
 #   PLUMED   : installed by `plumed patch`, linked in runtime mode, so the
-#              PLUMED version can be swapped after the build by pointing
-#              PLUMED_KERNEL somewhere else
+#              PLUMED build can be swapped afterwards through PLUMED_KERNEL
 #   libtorch : lets PLUMED build its pytorch module (neural-network CVs)
 #
-# Why ubuntu:24.04 and not something newer: it carries GCC 13 and CMake 3.28,
-# the combination this tree is known to build with.  GROMACS 2021.7 only
-# enforces GCC >= 7 and has no upper bound, but it predates GCC 14/15 and
-# CMake 4, and it already needed one fix for GCC 13 (utility/flags.h lost its
-# <cstdint> in the sync to 2021.7).  Do not bump the base without rebuilding.
+# ubuntu:24.04 carries GCC 13 and CMake 3.28, the combination this tree builds
+# with; GROMACS 2021.7 predates GCC 14/15 and CMake 4.
 #
 # Build:
 #     apptainer build --fakeroot gmx_dftbplus.sif Install_gmx_dftb_plumed_torch.def
-#
-# The source is injected from a tarball next to this file, because branch
-# sync-2021.7-full is not on GitHub yet.  Make it with:
-#     git archive --format=tar.gz --prefix=gromacs-dftbplus/ \
-#         sync-2021.7-full -o gromacs-dftbplus-sync-2021.7-full.tar.gz
-# Once the branch is pushed, drop the %files section and restore the two
-# `git clone` lines marked in section 5.
 # ---------------------------------------------------------------------------
-
-%files
-    gromacs-dftbplus-sync-2021.7-full.tar.gz /opt/gromacs-src.tar.gz
 
 %post -c /bin/bash
     set -e -x
@@ -39,15 +25,12 @@ From: ubuntu:24.04
     SRC=/opt/src                   # not /tmp: the host /tmp is bind-mounted
                                    # into the container during the build
     GROMACS_REPO=https://github.com/Vetrov-Anton/gromacs-dftbplus.git
-    GROMACS_BRANCH=sync-2021.7-full
+    GROMACS_BRANCH=main
     DFTBPLUS_VERSION=25.1          # any release with the modern C API (>= 23.1)
-    PLUMED_VERSION=2.9.5           # last PLUMED line that still ships the
-                                   # official patches/gromacs-2021.7 patch;
-                                   # 2.10 starts at gromacs-2022.5
-    LIBTORCH_VERSION=1.13.1        # PLUMED 2.9's own PYTORCH.md: "versions
-                                   # between 1.8.* and 1.13.* are supported",
-                                   # and 1.13.1 is the version it documents.
-                                   # torch 2.x belongs to PLUMED 2.10.
+    PLUMED_VERSION=2.9.5           # last PLUMED line shipping the official
+                                   # patches/gromacs-2021.7; 2.10 starts at
+                                   # gromacs-2022.5
+    LIBTORCH_VERSION=1.13.1        # PLUMED 2.9 supports 1.8.* .. 1.13.* only
     WITH_LIBTORCH=yes              # "no" skips libtorch and the pytorch CVs
     PLUMED_MODE=runtime            # runtime | shared  (runtime recommended)
     # -------------------------------------------------------------------
@@ -103,14 +86,11 @@ From: ubuntu:24.04
     # ------------------------------------------------------------------
     if [ "${WITH_LIBTORCH}" = "yes" ]; then
         cd ${SRC}
-        # The cxx11-ABI archive comes FIRST and that order matters at 1.13.1,
-        # where both names exist: the one without the infix is the pre-cxx11 ABI
-        # build, and linking it would additionally need
-        # CXXFLAGS="-D_GLIBCXX_USE_CXX11_ABI=0" (PLUMED's PYTORCH.md).  The
-        # infix disappeared around torch 2.8, when cxx11 became the only ABI,
-        # so the second name is the fallback for those.  wget -O leaves a stub
-        # behind on a 404; check the result instead of discovering it later as
-        # a confusing unzip failure.
+        # The cxx11-abi archive must come first: at 1.13.1 both names exist and
+        # the one without the infix is the pre-cxx11 ABI build, which would also
+        # need CXXFLAGS="-D_GLIBCXX_USE_CXX11_ABI=0".  wget -O leaves a stub
+        # behind on a 404, so check the result here rather than meeting it later
+        # as an unzip failure.
         LT_URL=https://download.pytorch.org/libtorch/cpu
         rm -f libtorch.zip
         for _n in "libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2Bcpu.zip" \
@@ -139,9 +119,6 @@ From: ubuntu:24.04
 
     PLUMED_CONF_EXTRA=""
     if [ "${WITH_LIBTORCH}" = "yes" ]; then
-        # No c++14 -> c++17 rewrite of configure here: that was needed by
-        # torch 2.x headers.  libtorch 1.13 is a C++14 library and PLUMED 2.9's
-        # own default standard suits it.
         export CPATH=${CPATH:-}:/opt/libtorch/include/torch/csrc/api/include:/opt/libtorch/include
         export LIBRARY_PATH=${LIBRARY_PATH:-}:/opt/libtorch/lib
         export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:/opt/libtorch/lib
@@ -156,29 +133,18 @@ From: ubuntu:24.04
     cd ${SRC} && rm -rf plumed-${PLUMED_VERSION} plumed-src-${PLUMED_VERSION}.tgz
 
     # ------------------------------------------------------------------
-    # 5. GROMACS
+    # 5. GROMACS  ->  /opt/gmx
     #
-    #    The PLUMED integration is installed by PLUMED's own `plumed patch`,
-    #    not by hand-maintained hooks in the sources.  The non-QM/MM part of
-    #    this tree is release GROMACS 2021.7, which is exactly what the
-    #    patches/gromacs-2021.7 patch expects, so it applies with no fuzz.
-    #    `plumed patch` also drops the three links into the source root:
-    #      Plumed.h     - wrapper header, included as "../../../Plumed.h"
-    #      Plumed.cmake - defines ${PLUMED_LOAD}, included by
-    #                     src/gromacs/CMakeLists.txt
-    #      Plumed.inc   - used only by the (unused) GNU-make build
-    #    Revert with: plumed patch -r -e gromacs-2021.7
+    #    The non-QM/MM part of this tree is release GROMACS 2021.7, which is
+    #    what patches/gromacs-2021.7 expects, so `plumed patch` applies with no
+    #    fuzz.  It also drops Plumed.h, Plumed.cmake and Plumed.inc into the
+    #    source root.  Revert with: plumed patch -r -e gromacs-2021.7
     # ------------------------------------------------------------------
     cd ${SRC}
     rm -rf gromacs-dftbplus
-    # Source comes from the tarball injected by %files, since branch
-    # ${GROMACS_BRANCH} is not on ${GROMACS_REPO} yet.  Once it is pushed,
-    # delete these three lines and the %files section and use instead:
-    #     git clone -b ${GROMACS_BRANCH} ${GROMACS_REPO} gromacs-dftbplus
-    #     cd gromacs-dftbplus && git log -1 --format='building %H (%ad)' --date=short
-    tar xzf /opt/gromacs-src.tar.gz -C ${SRC}
-    rm -f /opt/gromacs-src.tar.gz
+    git clone --depth 1 -b ${GROMACS_BRANCH} ${GROMACS_REPO} gromacs-dftbplus
     cd gromacs-dftbplus
+    git log -1 --format='building %H (%ad)' --date=short
 
     export PATH=/opt/plumed/bin:${PATH}
     export LD_LIBRARY_PATH=/opt/plumed/lib:${LD_LIBRARY_PATH:-}
@@ -186,11 +152,6 @@ From: ubuntu:24.04
     test -e Plumed.h && test -e Plumed.inc && test -e Plumed.cmake
 
     mkdir -p build && cd build
-    # No -D__PLUMED_WRAPPER_CXX_BIND_C=0 here: that flag was only needed by the
-    # hand-written integration, which assigned plumed_cmd to a plain C function
-    # pointer.  The official patch calls plumed_cmd directly, so the macro's
-    # C++ overload is fine.
-    #
     # GMX_QMMM_DFTBPLUS_LIB is the DFTB+ install PREFIX, not <prefix>/lib.
     cmake .. \
         -DCMAKE_INSTALL_PREFIX=/opt/gmx \
@@ -247,16 +208,13 @@ From: ubuntu:24.04
     gmx --version | head -20
     plumed info --version
 
-    # The version string carries both halves of the story: the GROMACS release
-    # the tree was synced to, and the PLUMED that patched it.
     gmx --version | grep -q "2021.7-plumed-2.9.5" && \
         echo "OK: version string reports 2021.7 patched by PLUMED 2.9.5" || \
         echo "WARNING: unexpected version string"
 
     gmx mdrun -h 2>&1 | grep -q -- '-plumed' && echo "OK: gmx mdrun has -plumed"
-    # -[no]hrex, not -hrex: that is how a boolean option is printed.
     gmx mdrun -h 2>&1 | grep -q 'hrex' && \
-        echo "OK: gmx mdrun has -hrex (absent from the hand-written hooks)" || \
+        echo "OK: gmx mdrun has -hrex" || \
         echo "WARNING: no -hrex in mdrun options"
 
     ldd /opt/gmx/lib/libgromacs.so | grep -qi dftb && echo "OK: libgromacs links DFTB+"
@@ -279,11 +237,12 @@ From: ubuntu:24.04
 %help
     GROMACS 2021.7 (double precision, OpenMPI) with DFTB+ QM/MM and PLUMED.
 
-    Everything outside QM/MM is release GROMACS 2021.7, and PLUMED is applied
-    by its own `plumed patch -e gromacs-2021.7`, not by hooks carried in the
-    sources.  PLUMED is pinned to 2.9.5: it is the last line that still ships
-    that patch (2.10 starts at gromacs-2022.5).  libtorch is pinned to 1.13.1
-    because PLUMED 2.9 supports 1.8.* to 1.13.* only.
+    The sources are cloned from github.com/Vetrov-Anton/gromacs-dftbplus during
+    the build.  Everything outside QM/MM is release GROMACS 2021.7, and PLUMED
+    is applied by its own `plumed patch -e gromacs-2021.7`.  PLUMED is pinned to
+    2.9.5: it is the last line that still ships that patch (2.10 starts at
+    gromacs-2022.5).  libtorch is pinned to 1.13.1 because PLUMED 2.9 supports
+    1.8.* to 1.13.* only.
 
     Build
     -----

@@ -1,6 +1,6 @@
 # GROMACS + DFTB+ — QM/MM with boundary exclusions and selectable MM retention
 
-This is a fork of the GROMACS/DFTB+ QM/MM interface (GROMACS 2022, DFTB+ coupling
+This is a fork of the GROMACS/DFTB+ QM/MM interface (GROMACS 2021.7, DFTB+ coupling
 by Kubař *et al.*) with four additions:
 
 1. **Topological (1-2, 1-3, 1-4) exclusions of the QM–MM electrostatics** — the MM atoms
@@ -26,16 +26,20 @@ is involved. With none of them set, the build behaves exactly like the original 
 ### GROMACS
 
 A single Apptainer/Singularity recipe ships with the repository. It builds DFTB+ 25.1 (with
-the API, tblite and s-dftd3), PLUMED 2.9.5 linked in runtime mode with libtorch, and this
-GROMACS in double precision with MPI, on Ubuntu 26.04. PLUMED is integrated by its own
-`plumed patch -e gromacs-2021.7`, not by hooks kept in these sources:
+the API, tblite and s-dftd3), PLUMED 2.9.5 linked in runtime mode with libtorch 1.13.1, and
+this GROMACS in double precision with MPI, on Ubuntu 24.04. PLUMED is integrated by its own
+`plumed patch -e gromacs-2021.7`, not by hooks kept in these sources.
+
+The recipe clones this repository during the build, so the `.def` file is the only thing you
+need to have locally:
 
 ```bash
+wget https://raw.githubusercontent.com/Vetrov-Anton/gromacs-dftbplus/main/Install_gmx_dftb_plumed_torch.def
 apptainer build --fakeroot gmx_dftbplus.sif Install_gmx_dftb_plumed_torch.def
 ```
 
-Versions are set in one block at the top of `%post`, so DFTB+, PLUMED and libtorch can each
-be moved without touching anything else.
+Versions, the branch to build and the number of build jobs are set in one block at the top
+of `%post`, so DFTB+, PLUMED and libtorch can each be moved without touching anything else.
 
 The `%environment` section presets `GMX_QMMM_VARIANT=1`, `OMP_NUM_THREADS=1` and
 **`GMX_QMMM_NREXCL=3`** inside the container. The last one is not the code's own default —
