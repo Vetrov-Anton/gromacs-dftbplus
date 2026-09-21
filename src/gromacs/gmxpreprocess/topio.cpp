@@ -50,6 +50,7 @@
 #include <algorithm>
 #include <memory>
 #include <unordered_set>
+#include <vector>
 
 #include <sys/types.h>
 
@@ -1128,6 +1129,28 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
         bQMMM[qm_arr[i]] = TRUE;
     }
 
+    /* The atoms each virtual site is constructed from. A link atom is a virtual
+     * site in the QM group, and the bonds that start from it are connections
+     * (funct 5) that only serve to generate exclusions.
+     */
+    std::vector<std::vector<int>> vsiteConstructingAtoms(molt->atoms.nr);
+    for (int ftype = 0; ftype < F_NRE; ftype++)
+    {
+        if (!(interaction_function[ftype].flags & IF_VSITE))
+        {
+            continue;
+        }
+        const int              nratoms = interaction_function[ftype].nratoms;
+        const InteractionList& il      = molt->ilist[ftype];
+        for (int i = 0; i < il.size(); i += 1 + nratoms)
+        {
+            for (int k = 2; k <= nratoms; k++)
+            {
+                vsiteConstructingAtoms[il.iatoms[i + 1]].push_back(il.iatoms[i + k]);
+            }
+        }
+    }
+
     /* We remove all bonded interactions (i.e. bonds,
      * angles, dihedrals, 1-4's), involving the QM atoms. The way they
      * are removed is as follows: if the interaction invloves 2 atoms,
@@ -1293,18 +1316,28 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
                     int a2 = molt->ilist[i].iatoms[j + 2];
                     if ((bQMMM[a1] && !bQMMM[a2]) || (!bQMMM[a1] && bQMMM[a2]))
                     {
-                        if (link_nr >= link_max)
+                        const int qmAtom = bQMMM[a1] ? a1 : a2;
+                        const int mmAtom = bQMMM[a1] ? a2 : a1;
+                        /* A bond from a link atom (a virtual site of the QM group) is
+                         * a connection that only generates exclusions. It marks a
+                         * boundary MM atom only if that atom is one the link atom is
+                         * constructed from, i.e. the MM atom of the cut bond. Bonds
+                         * from a link atom to the further neighbours (MM2) must not
+                         * extend the LJ and LJ-14 exclusions to those atoms.
+                         */
+                        const std::vector<int>& constructing = vsiteConstructingAtoms[qmAtom];
+                        const bool              accepted =
+                                constructing.empty()
+                                || std::find(constructing.begin(), constructing.end(), mmAtom)
+                                           != constructing.end();
+                        if (accepted)
                         {
-                            link_max += 10;
-                            srenew(link_arr, link_max);
-                        }
-                        if (bQMMM[a1])
-                        {
-                            link_arr[link_nr++] = a2;
-                        }
-                        else
-                        {
-                            link_arr[link_nr++] = a1;
+                            if (link_nr >= link_max)
+                            {
+                                link_max += 10;
+                                srenew(link_arr, link_max);
+                            }
+                            link_arr[link_nr++] = mmAtom;
                         }
                     }
                     j += 3;
