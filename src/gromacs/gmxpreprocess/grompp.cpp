@@ -1689,9 +1689,8 @@ static GmxQmmmMode getQmmmBondedScheme(warninp* wi, const gmx::MDLogger& logger)
                 .appendTextFormatted(
                         "QM/MM: treating the bonded interactions at the QM/MM boundary with the "
                         "'classic' scheme -- a bonded interaction is removed when all but one of "
-                        "its atoms are QM, and the nonbonded and 1-4 interactions of the QM atoms "
-                        "with the MM atoms bound to them are excluded. To change, set the "
-                        "environment variable GMX_QMMM_BONDED_SCHEME to 'amber'.");
+                        "its atoms are QM. To change, set the environment variable "
+                        "GMX_QMMM_BONDED_SCHEME to 'amber'.");
         return GmxQmmmMode::GMX_QMMM_ORIGINAL;
     }
 
