@@ -1186,7 +1186,7 @@ static bool isQmmmKeptRestraint(int ftype)
  * \param[in] atomOffset Global index of the first atom of this molecule, for the report.
  * \param[in,out] report Per-atom record of the changes, written to a file at the end.
  * \param[in] excludeBoundaryLJ Exclude the LJ and LJ-14 of the boundary MM atoms with
- *                              every QM atom (classic scheme only, GMX_QMMM_BOUNDARY_LJ=exclude).
+ *                              every QM atom (classic scheme only, GMX_QMMM_LJ_SCHEME=exclude).
  */
 static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
                                     const unsigned char*    grpnr,
@@ -1527,7 +1527,7 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
     }
 
     /* The boundary MM atoms collected above lose their LJ and LJ-14 interactions
-     * with every QM atom only on request (GMX_QMMM_BOUNDARY_LJ=exclude). By default
+     * with every QM atom only on request (GMX_QMMM_LJ_SCHEME=exclude). By default
      * the LJ between the QM and the MM atoms follows the exclusion rules of the force
      * field: the pairs within nrexcl bonds are excluded by grompp anyway, the 1-4 pairs
      * keep their LJ-14, and every other pair keeps its LJ. The collected atoms are
@@ -1833,7 +1833,7 @@ static void writeQmmmTopologyReport(const QmmmTopologyReport& report, GmxQmmmMod
     std::fprintf(fp, "; QM/MM changes to the force-field topology, written by gmx grompp\n");
     std::fprintf(fp, "; scheme for the bonded terms at the QM/MM boundary: %s (GMX_QMMM_BONDED_SCHEME)\n",
                  schemeName);
-    std::fprintf(fp, "; LJ between QM and MM atoms: %s (GMX_QMMM_BOUNDARY_LJ)\n",
+    std::fprintf(fp, "; LJ between QM and MM atoms: %s (GMX_QMMM_LJ_SCHEME)\n",
                  report.excludeBoundaryLJ ? "exclude -- boundary MM atoms lose LJ and LJ-14 with every QM atom"
                                           : "forcefield -- exclusion rules of the force field (nrexcl, [ pairs ])");
     std::fprintf(fp, "; atom numbers are global and 1-based, i.e. the numbering of the input .gro file\n");
@@ -1849,7 +1849,7 @@ static void writeQmmmTopologyReport(const QmmmTopologyReport& report, GmxQmmmMod
 
     std::fprintf(fp, "\n[ boundary_bonds ]\n");
     std::fprintf(fp, "; chemical bonds and connections with exactly one QM atom. The MM atom of an\n");
-    std::fprintf(fp, "; accepted bond is a boundary MM atom. Only with GMX_QMMM_BOUNDARY_LJ=exclude\n");
+    std::fprintf(fp, "; accepted bond is a boundary MM atom. Only with GMX_QMMM_LJ_SCHEME=exclude\n");
     std::fprintf(fp, "; its LJ and LJ-14 interactions with every QM atom are excluded; %s.\n",
                  report.excludeBoundaryLJ ? "this is the case here" : "not the case here");
     std::fprintf(fp, "; %-26s %-26s %-12s %s\n", "QM atom", "MM atom", "bond type", "boundary MM atom?");
@@ -2016,7 +2016,7 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
     //   (default), or, as in earlier versions, with the boundary MM atoms excluded
     //   from every QM atom.
     bool        excludeBoundaryLJ = false;
-    const char* ljEnv             = std::getenv("GMX_QMMM_BOUNDARY_LJ");
+    const char* ljEnv             = std::getenv("GMX_QMMM_LJ_SCHEME");
     if (ljEnv != nullptr && gmx_strcasecmp(ljEnv, "exclude") == 0)
     {
         excludeBoundaryLJ = true;
@@ -2024,7 +2024,7 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
     else if (ljEnv != nullptr && gmx_strcasecmp(ljEnv, "forcefield") != 0)
     {
         gmx_fatal(FARGS,
-                  "Unknown value '%s' of the environment variable GMX_QMMM_BOUNDARY_LJ. "
+                  "Unknown value '%s' of the environment variable GMX_QMMM_LJ_SCHEME. "
                   "Use 'forcefield' (the default) or 'exclude'.",
                   ljEnv);
     }
@@ -2034,14 +2034,14 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
                 .asParagraph()
                 .appendTextFormatted(
                         excludeBoundaryLJ
-                                ? "QM/MM: GMX_QMMM_BOUNDARY_LJ=exclude -- the LJ and LJ-14 "
+                                ? "QM/MM: GMX_QMMM_LJ_SCHEME=exclude -- the LJ and LJ-14 "
                                   "interactions of every QM atom with the MM atoms bound to the "
                                   "QM region are excluded (the behaviour of earlier versions)."
                                 : "QM/MM: the LJ between the QM and the MM atoms follows the "
                                   "exclusion rules of the force field (nrexcl and [ pairs ]); "
                                   "only the LJ within the QM region is excluded. To exclude also "
                                   "the LJ of the MM atoms bound to the QM region with every QM "
-                                  "atom, set GMX_QMMM_BOUNDARY_LJ=exclude.");
+                                  "atom, set GMX_QMMM_LJ_SCHEME=exclude.");
     }
 
     grpnr = sys->groups.groupNumbers[SimulationAtomGroupType::QuantumMechanics].data();
