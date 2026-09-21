@@ -1117,6 +1117,27 @@ static std::vector<int> qmmmBondDistances(const std::vector<std::vector<int>>& g
     return depth;
 }
 
+/*! \brief Whether \p ftype is a restraint set by the user rather than a force-field term.
+ *
+ * Restraints are never described by the QM calculation, so they are kept at any
+ * QM/MM boundary and inside the QM region, with every scheme.
+ */
+static bool isQmmmKeptRestraint(int ftype)
+{
+    switch (ftype)
+    {
+        case F_RESTRBONDS:
+        case F_POSRES:
+        case F_FBPOSRES:
+        case F_DISRES:
+        case F_ORIRES:
+        case F_ANGRES:
+        case F_ANGRESZ:
+        case F_DIHRES: return true;
+        default: return false;
+    }
+}
+
 /*! \brief
  * Exclude molecular interactions for QM atoms in QM/MM
  *
@@ -1149,6 +1170,11 @@ static std::vector<int> qmmmBondDistances(const std::vector<std::vector<int>>& g
  *
  * GMX_QMMM_MIMIC uses the same rule for the bonded interactions as
  *   GMX_QMMM_AMBER, because MiMiC treats the link atoms as quantum atoms.
+ *
+ * Restraints (position, flat-bottomed position, distance, orientation, angle,
+ *   dihedral restraints and restraint potentials) are kept with every scheme,
+ *   also on QM atoms: they are set by the user and not part of the force field
+ *   that the QM calculation replaces.
  *
  * \param[in,out] molt molecule type with QM atoms
  * \param[in] grpnr group informatio
@@ -1310,7 +1336,8 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
      */
     for (int ftype = 0; ftype < F_NRE; ftype++)
     {
-        if (!(interaction_function[ftype].flags & IF_BOND) || ftype == F_CONNBONDS)
+        if (!(interaction_function[ftype].flags & IF_BOND) || ftype == F_CONNBONDS
+            || isQmmmKeptRestraint(ftype))
         {
             continue;
         }
@@ -1370,9 +1397,8 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
                  * The "amber" scheme uses the same rule for a different reason:
                  * an interaction is only removed if it is described by the QM
                  * calculation completely, i.e. if all of its atoms are QM.
-                 * Note that this also concerns the interactions of a single atom
-                 * (position restraints), which are removed unconditionally by the
-                 * classic scheme, but only for the QM atoms by the amber scheme.
+                 * (Restraints, including the single-atom position restraints,
+                 * never get here: they are kept with every scheme.)
                  */
                 if (qmmmMode == GmxQmmmMode::GMX_QMMM_MIMIC || qmmmMode == GmxQmmmMode::GMX_QMMM_AMBER)
                 {
@@ -1840,7 +1866,8 @@ static void writeQmmmTopologyReport(const QmmmTopologyReport& report, GmxQmmmMod
     std::fprintf(fp, "\n[ removed_bonded_terms ]\n");
     std::fprintf(fp, "; force-field terms removed from the topology, per interaction type.\n");
     std::fprintf(fp, "; class: boundary = QM and MM atoms, all-QM = described by the QM calculation,\n");
-    std::fprintf(fp, ";        MM-only = no QM atom (single-atom terms of the QM molecule, e.g. position restraints)\n");
+    std::fprintf(fp, ";        MM-only = no QM atom\n");
+    std::fprintf(fp, "; restraints (position, distance, orientation, angle, dihedral) are never removed\n");
     for (int ftype = 0; ftype < F_NRE; ftype++)
     {
         for (const char* cls : { "boundary", "all-QM", "MM-only" })
