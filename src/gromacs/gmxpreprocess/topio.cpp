@@ -1764,6 +1764,28 @@ static void reportQmmmRemovedInteractions(const QmmmRemovedInteractions& removed
 }
 
 
+/*! \brief Whether the per-atom QM/MM report files are written.
+ *
+ * On by default; GMX_QMMM_REPORTS set to 0, no, off or false switches off the
+ * reports of both grompp and mdrun, together with the lines that point to them.
+ */
+static bool qmmmReportsEnabled()
+{
+    const char* env = std::getenv("GMX_QMMM_REPORTS");
+    if (env == nullptr)
+    {
+        return true;
+    }
+    for (const char* off : { "0", "no", "off", "false" })
+    {
+        if (gmx_strcasecmp(env, off) == 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 //! Writes the detailed per-atom report of the QM/MM changes to the topology
 static void writeQmmmTopologyReport(const QmmmTopologyReport& report, GmxQmmmMode qmmmMode, const char* fileName)
 {
@@ -2073,6 +2095,9 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
     if (nr_mol_with_qm_atoms > 0)
     {
         reportQmmmRemovedInteractions(removed, qmmmMode, logger);
+    }
+    if (nr_mol_with_qm_atoms > 0 && qmmmReportsEnabled())
+    {
         const char* reportFile = std::getenv("GMX_QMMM_TOPOLOGY_REPORT");
         if (reportFile == nullptr)
         {
@@ -2082,7 +2107,8 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
         GMX_LOG(logger.info)
                 .appendTextFormatted(
                         "QM/MM: every removed term, pair and exclusion is listed atom by atom in %s\n"
-                        "       (file name set with GMX_QMMM_TOPOLOGY_REPORT).\n",
+                        "       (file name set with GMX_QMMM_TOPOLOGY_REPORT, switched off with "
+                        "GMX_QMMM_REPORTS=off).\n",
                         reportFile);
     }
     if (qmmmMode != GmxQmmmMode::GMX_QMMM_MIMIC && nr_mol_with_qm_atoms > 1)

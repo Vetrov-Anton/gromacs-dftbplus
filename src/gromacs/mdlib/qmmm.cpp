@@ -84,6 +84,7 @@
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_lookup.h"
+#include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
@@ -729,6 +730,28 @@ void removeQmmmAtomCharges(gmx_mtop_t* mtop, gmx::ArrayRef<const int> qmmmAtoms)
 namespace
 {
 
+/*! \brief Whether the per-atom QM/MM report files are written.
+ *
+ * On by default; GMX_QMMM_REPORTS set to 0, no, off or false switches off the
+ * reports of both grompp and mdrun, together with the lines that point to them.
+ */
+bool qmmmReportsEnabled()
+{
+    const char* env = std::getenv("GMX_QMMM_REPORTS");
+    if (env == nullptr)
+    {
+        return true;
+    }
+    for (const char* off : { "0", "no", "off", "false" })
+    {
+        if (gmx_strcasecmp(env, off) == 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 //! A QM--MM pair of the QM/MM electrostatics that is removed or scaled
 struct QmmmExcludedPair
 {
@@ -1064,7 +1087,7 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
     }
 
     // Detailed report, atom by atom, in a separate file.
-    if (cr == nullptr || MASTER(cr))
+    if ((cr == nullptr || MASTER(cr)) && qmmmReportsEnabled())
     {
         const char* reportFile = getenv("GMX_QMMM_EXCLUSION_REPORT");
         if (reportFile == nullptr)
@@ -1074,7 +1097,8 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
         writeQmmmExclusionReport(mtop, qm_.indexQM, qm_.nrQMatoms, excludedPairs, bonds, bQM,
                                  qmmmNrexcl, qmmmFudgeQQ, nExcluded, nScaled, reportFile);
         fprintf(stdout, "Every QM--MM pair of the QM/MM electrostatics that is removed or scaled is listed in %s\n"
-                        "  (file name set with GMX_QMMM_EXCLUSION_REPORT).\n",
+                        "  (file name set with GMX_QMMM_EXCLUSION_REPORT, switched off with "
+                        "GMX_QMMM_REPORTS=off).\n",
                 reportFile);
     }
 }
