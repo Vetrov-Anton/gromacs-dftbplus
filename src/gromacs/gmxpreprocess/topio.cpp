@@ -49,6 +49,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -84,6 +85,7 @@
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/pleasecite.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/stringutil.h"
 
 #define OPENDIR '['  /* starting sign for directive */
 #define CLOSEDIR ']' /* ending sign for directive   */
@@ -1029,6 +1031,86 @@ struct QmmmRemovedInteractions
     std::array<int, F_NRE> mmOnly = {};
 };
 
+/*! \brief Detailed, per-atom record of what generate_qmexcl_moltype() changed.
+ *
+ * All atom numbers are global and 0-based here; they are written 1-based, i.e. in
+ * the numbering of the input coordinate file. The labels are stored together with
+ * the numbers, because the molecule types are modified while the report is filled.
+ */
+struct QmmmTopologyReport
+{
+    //! One atom of a reported term: global index, "RESnr NAME" label, QM or not
+    struct Atom
+    {
+        int         index;
+        std::string label;
+        bool        isQm;
+    };
+    //! A force-field term (bonded interaction or pair) with its atoms
+    struct Term
+    {
+        int               ftype;
+        std::vector<Atom> atoms;
+    };
+    //! A bond with exactly one QM atom, and whether it makes its MM atom a boundary atom
+    struct BoundaryBond
+    {
+        int         ftype;
+        Atom        qm;
+        Atom        mm;
+        bool        accepted;
+        std::string reason;
+    };
+    //! A nonbonded (LJ) exclusion between a QM atom and another atom
+    struct Exclusion
+    {
+        Atom qm;
+        Atom other;
+        int  bondDistance; //!< number of bonds between the two atoms, -1 if more than 7
+        bool presentBefore; //!< already excluded by the force field (nrexcl) before QM/MM
+    };
+    std::vector<BoundaryBond> boundaryBonds;
+    std::vector<Term>         removedBonded;
+    std::vector<Term>         convertedBonds;
+    std::vector<Term>         removedPairs;
+    std::vector<Exclusion>    qmQmExclusions;
+    std::vector<Exclusion>    qmMmExclusions;
+    std::vector<Atom>         qmAtoms;
+};
+
+//! "RESnr NAME" label of a local atom of a molecule type
+static std::string qmmmAtomLabel(const gmx_moltype_t& molt, int localIndex)
+{
+    const t_atoms& atoms = molt.atoms;
+    const t_resinfo& ri  = atoms.resinfo[atoms.atom[localIndex].resind];
+    return gmx::formatString("%s%d %s", *ri.name, ri.nr, *atoms.atomname[localIndex]);
+}
+
+//! Bond distances (up to \p maxDepth) from local atom \p start, over the chemical bonds
+static std::vector<int> qmmmBondDistances(const std::vector<std::vector<int>>& graph, int start, int maxDepth)
+{
+    std::vector<int> depth(graph.size(), -1);
+    std::vector<int> frontier{ start };
+    depth[start] = 0;
+    for (int d = 1; d <= maxDepth && !frontier.empty(); d++)
+    {
+        std::vector<int> next;
+        for (int a : frontier)
+        {
+            for (int b : graph[a])
+            {
+                if (depth[b] == -1)
+                {
+                    depth[b] = d;
+                    next.push_back(b);
+                }
+            }
+        }
+        frontier = std::move(next);
+    }
+    return depth;
+}
+
 /*! \brief
  * Exclude molecular interactions for QM atoms in QM/MM
  *
@@ -1073,7 +1155,9 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
                                     t_inputrec*             ir,
                                     GmxQmmmMode             qmmmMode,
                                     const gmx::MDLogger&    logger,
-                                    QmmmRemovedInteractions* removed)
+                                    QmmmRemovedInteractions* removed,
+                                    int                     atomOffset,
+                                    QmmmTopologyReport*     report)
 {
     /* This routine expects molt->ilist to be of size F_NRE and ordered. */
 
@@ -1129,6 +1213,23 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
         bQMMM[qm_arr[i]] = TRUE;
     }
 
+    const auto reportAtom = [&](int local) {
+        return QmmmTopologyReport::Atom{ atomOffset + local, qmmmAtomLabel(*molt, local),
+                                         static_cast<bool>(bQMMM[local]) };
+    };
+    const auto reportTerm = [&](int ftype, const int* iatoms, int nratoms) {
+        QmmmTopologyReport::Term term{ ftype, {} };
+        for (int k = 0; k < nratoms; k++)
+        {
+            term.atoms.push_back(reportAtom(iatoms[k]));
+        }
+        return term;
+    };
+    for (int i = 0; i < qm_nr; i++)
+    {
+        report->qmAtoms.push_back(reportAtom(qm_arr[i]));
+    }
+
     /* The atoms each virtual site is constructed from. A link atom is a virtual
      * site in the QM group, and the bonds that start from it are connections
      * (funct 5) that only serve to generate exclusions.
@@ -1147,6 +1248,21 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
             for (int k = 2; k <= nratoms; k++)
             {
                 vsiteConstructingAtoms[il.iatoms[i + 1]].push_back(il.iatoms[i + k]);
+            }
+        }
+    }
+
+    /* Chemical-bond graph of the molecule, for the bond distances in the report */
+    std::vector<std::vector<int>> bondGraph(molt->atoms.nr);
+    for (int ftype = 0; ftype < F_NRE; ftype++)
+    {
+        if (IS_CHEMBOND(ftype))
+        {
+            const InteractionList& il = molt->ilist[ftype];
+            for (int i = 0; i < il.size(); i += 3)
+            {
+                bondGraph[il.iatoms[i + 1]].push_back(il.iatoms[i + 2]);
+                bondGraph[il.iatoms[i + 2]].push_back(il.iatoms[i + 1]);
             }
         }
     }
@@ -1217,6 +1333,8 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
                  */
                 if (bexcl && IS_CHEMBOND(ftype))
                 {
+                    report->convertedBonds.push_back(
+                            reportTerm(ftype, molt->ilist[ftype].iatoms.data() + j + 1, nratoms));
                     InteractionList& ilist = molt->ilist[F_CONNBONDS];
                     ilist.iatoms.resize(ind_connbond + 3);
                     ilist.iatoms[ind_connbond++] = ftype_connbond;
@@ -1262,6 +1380,18 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
             if (bexcl)
             {
                 /* keep track of what is being removed, for the report at the end */
+                if (interaction_function[ftype].flags & IF_PAIR)
+                {
+                    /* pairs of two QM atoms are removed here already; list them
+                     * with the other removed pairs */
+                    report->removedPairs.push_back(
+                            reportTerm(ftype, molt->ilist[ftype].iatoms.data() + j + 1, nratoms));
+                }
+                else if (!(nratoms == 2 && IS_CHEMBOND(ftype)))
+                {
+                    report->removedBonded.push_back(
+                            reportTerm(ftype, molt->ilist[ftype].iatoms.data() + j + 1, nratoms));
+                }
                 if (numQmAtoms == nratoms)
                 {
                     removed->allQm[ftype]++;
@@ -1326,10 +1456,16 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
                          * extend the LJ and LJ-14 exclusions to those atoms.
                          */
                         const std::vector<int>& constructing = vsiteConstructingAtoms[qmAtom];
+                        const bool              fromLinkAtom = !constructing.empty();
                         const bool              accepted =
-                                constructing.empty()
+                                !fromLinkAtom
                                 || std::find(constructing.begin(), constructing.end(), mmAtom)
                                            != constructing.end();
+                        report->boundaryBonds.push_back(
+                                { i, reportAtom(qmAtom), reportAtom(mmAtom), accepted,
+                                  !fromLinkAtom ? "bond of a QM atom"
+                                                : (accepted ? "link atom constructed from this MM atom"
+                                                            : "link atom NOT constructed from this MM atom: ignored") });
                         if (accepted)
                         {
                             if (link_nr >= link_max)
@@ -1393,6 +1529,40 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
     }
     qmexcl.index[qmexcl.nr] = j;
 
+    /* record the exclusions for the report, and whether the force field
+     * (nrexcl) had excluded the pair already
+     */
+    {
+        const auto excludedBefore = [&](int a, int b) {
+            const auto list = molt->excls[a];
+            return std::find(list.begin(), list.end(), b) != list.end();
+        };
+        std::vector<bool> reported(molt->atoms.nr, false);
+        for (int a = 0; a < qm_nr; a++)
+        {
+            const int              qa    = qm_arr[a];
+            const std::vector<int> depth = qmmmBondDistances(bondGraph, qa, 7);
+            for (int b = a + 1; b < qm_nr; b++)
+            {
+                const int qb = qm_arr[b];
+                report->qmQmExclusions.push_back(
+                        { reportAtom(qa), reportAtom(qb), depth[qb], excludedBefore(qa, qb) });
+            }
+            std::fill(reported.begin(), reported.end(), false);
+            for (int k = 0; k < link_nr; k++)
+            {
+                const int mm = link_arr[k];
+                if (reported[mm])
+                {
+                    continue; // the same MM atom can be reached by more than one bond
+                }
+                reported[mm] = true;
+                report->qmMmExclusions.push_back(
+                        { reportAtom(qa), reportAtom(mm), depth[mm], excludedBefore(qa, mm) });
+            }
+        }
+    }
+
     /* and merging with the exclusions already present in sys.
      */
 
@@ -1419,6 +1589,7 @@ static void generate_qmexcl_moltype(gmx_moltype_t*          molt,
                     ((bQMMM[a1] && bQMMM[a2]) || (blink[a1] && bQMMM[a2]) || (bQMMM[a1] && blink[a2]));
             if (bexcl)
             {
+                report->removedPairs.push_back(reportTerm(i, molt->ilist[i].iatoms.data() + j + 1, 2));
                 /* keep track of what is being removed, for the report at the end:
                  * a pair of two QM atoms, or a QM atom with a link atom (boundary)
                  */
@@ -1532,6 +1703,159 @@ static void reportQmmmRemovedInteractions(const QmmmRemovedInteractions& removed
                     "listed here as well.\n");
 }
 
+
+//! Writes the detailed per-atom report of the QM/MM changes to the topology
+static void writeQmmmTopologyReport(const QmmmTopologyReport& report, GmxQmmmMode qmmmMode, const char* fileName)
+{
+    FILE* fp = std::fopen(fileName, "w");
+    if (fp == nullptr)
+    {
+        return;
+    }
+    const auto atomText = [](const QmmmTopologyReport::Atom& a) {
+        return gmx::formatString("%7d %-14s %s", a.index + 1, a.label.c_str(), a.isQm ? "QM" : "MM");
+    };
+    const auto distanceText = [](int d) {
+        return d < 0 ? std::string("> 1-8") : gmx::formatString("1-%d", d + 1);
+    };
+    const char* schemeName = qmmmMode == GmxQmmmMode::GMX_QMMM_MIMIC
+                                     ? "MiMiC"
+                                     : (qmmmMode == GmxQmmmMode::GMX_QMMM_AMBER ? "amber" : "classic");
+
+    std::fprintf(fp, "; QM/MM changes to the force-field topology, written by gmx grompp\n");
+    std::fprintf(fp, "; scheme for the bonded terms at the QM/MM boundary: %s (GMX_QMMM_BONDED_SCHEME)\n",
+                 schemeName);
+    std::fprintf(fp, "; atom numbers are global and 1-based, i.e. the numbering of the input .gro file\n");
+    std::fprintf(fp, "; labels are RESIDUEnumber ATOMNAME from the topology; QM/MM marks the region\n");
+    std::fprintf(fp, "; the QM/MM electrostatic exclusions (GMX_QMMM_NREXCL) are applied by mdrun and\n");
+    std::fprintf(fp, ";   listed in its own report, not here\n\n");
+
+    std::fprintf(fp, "[ qm_atoms ]\n; %zu atoms; their charges are set to zero in the tpr\n", report.qmAtoms.size());
+    for (const auto& a : report.qmAtoms)
+    {
+        std::fprintf(fp, "%s\n", atomText(a).c_str());
+    }
+
+    std::fprintf(fp, "\n[ boundary_bonds ]\n");
+    std::fprintf(fp, "; chemical bonds and connections with exactly one QM atom. The MM atom of an\n");
+    std::fprintf(fp, "; accepted bond is a boundary MM atom: with the classic scheme its LJ and LJ-14\n");
+    std::fprintf(fp, "; interactions with every QM atom are excluded (sections below).\n");
+    std::fprintf(fp, "; %-26s %-26s %-12s %s\n", "QM atom", "MM atom", "bond type", "boundary MM atom?");
+    for (const auto& b : report.boundaryBonds)
+    {
+        std::fprintf(fp, "%s %s  %-12s %s (%s)\n", atomText(b.qm).c_str(), atomText(b.mm).c_str(),
+                     interaction_function[b.ftype].name, b.accepted ? "yes" : "no", b.reason.c_str());
+    }
+    if (report.boundaryBonds.empty())
+    {
+        std::fprintf(fp, "; none\n");
+    }
+
+    std::fprintf(fp, "\n[ removed_bonded_terms ]\n");
+    std::fprintf(fp, "; force-field terms removed from the topology, per interaction type.\n");
+    std::fprintf(fp, "; class: boundary = QM and MM atoms, all-QM = described by the QM calculation,\n");
+    std::fprintf(fp, ";        MM-only = no QM atom (single-atom terms of the QM molecule, e.g. position restraints)\n");
+    for (int ftype = 0; ftype < F_NRE; ftype++)
+    {
+        for (const char* cls : { "boundary", "all-QM", "MM-only" })
+        {
+            std::vector<const QmmmTopologyReport::Term*> terms;
+            for (const auto& term : report.removedBonded)
+            {
+                if (term.ftype != ftype)
+                {
+                    continue;
+                }
+                int nQm = 0;
+                for (const auto& a : term.atoms)
+                {
+                    nQm += a.isQm ? 1 : 0;
+                }
+                const char* c = nQm == static_cast<int>(term.atoms.size()) ? "all-QM"
+                                                                             : (nQm > 0 ? "boundary" : "MM-only");
+                if (std::strcmp(c, cls) == 0)
+                {
+                    terms.push_back(&term);
+                }
+            }
+            if (terms.empty())
+            {
+                continue;
+            }
+            std::fprintf(fp, "; %s, %s: %zu\n", interaction_function[ftype].longname, cls, terms.size());
+            for (const auto* term : terms)
+            {
+                std::string line = gmx::formatString("  %-8s", cls);
+                for (const auto& a : term->atoms)
+                {
+                    line += " |" + atomText(a);
+                }
+                std::fprintf(fp, "%s\n", line.c_str());
+            }
+        }
+    }
+    if (report.removedBonded.empty())
+    {
+        std::fprintf(fp, "; none\n");
+    }
+
+    std::fprintf(fp, "\n[ qm_qm_bonds_converted_to_connections ]\n");
+    std::fprintf(fp, "; chemical bonds between two QM atoms: no force any more, but still used for exclusions\n");
+    for (const auto& term : report.convertedBonds)
+    {
+        std::fprintf(fp, "  %-12s |%s |%s\n", interaction_function[term.ftype].name,
+                     atomText(term.atoms[0]).c_str(), atomText(term.atoms[1]).c_str());
+    }
+
+    for (const bool boundary : { true, false })
+    {
+        std::vector<const QmmmTopologyReport::Term*> pairs;
+        for (const auto& term : report.removedPairs)
+        {
+            const bool isBoundary = !(term.atoms[0].isQm && term.atoms[1].isQm);
+            if (isBoundary == boundary)
+            {
+                pairs.push_back(&term);
+            }
+        }
+        std::fprintf(fp, "\n[ removed_lj14_pairs_%s ]\n", boundary ? "qm_boundary_mm" : "qm_qm");
+        std::fprintf(fp, "; pair interactions (LJ-14 with its Coulomb-14) removed from the topology: %zu\n", pairs.size());
+        if (boundary)
+        {
+            std::fprintf(fp, "; a QM atom with a boundary MM atom -- counted in the QM calculation via the link atom\n");
+        }
+        for (const auto* term : pairs)
+        {
+            std::fprintf(fp, "  %-8s |%s |%s\n", interaction_function[term->ftype].name,
+                         atomText(term->atoms[0]).c_str(), atomText(term->atoms[1]).c_str());
+        }
+    }
+
+    for (const bool boundary : { true, false })
+    {
+        const auto& list = boundary ? report.qmMmExclusions : report.qmQmExclusions;
+        int         nNew = 0;
+        for (const auto& e : list)
+        {
+            nNew += e.presentBefore ? 0 : 1;
+        }
+        std::fprintf(fp, "\n[ lj_exclusions_%s ]\n", boundary ? "qm_boundary_mm" : "qm_qm");
+        std::fprintf(fp, "; nonbonded exclusions generated for QM/MM: %zu pairs, %d of them new, %zu already\n",
+                     list.size(), nNew, list.size() - nNew);
+        std::fprintf(fp, "; excluded by the force field (nrexcl). An excluded pair has neither LJ nor Coulomb;\n");
+        std::fprintf(fp, "; the Coulomb of a QM atom is zero anyway, so what is removed here is the LJ.\n");
+        std::fprintf(fp, "; %-26s %-26s %-8s %s\n", "QM atom", boundary ? "boundary MM atom" : "QM atom",
+                     "bonds", "status");
+        for (const auto& e : list)
+        {
+            std::fprintf(fp, "%s %s  %-8s %s\n", atomText(e.qm).c_str(), atomText(e.other).c_str(),
+                         distanceText(e.bondDistance).c_str(),
+                         e.presentBefore ? "already excluded by the force field" : "NEW: LJ removed by QM/MM");
+        }
+    }
+    std::fclose(fp);
+}
+
 void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode qmmmMode, const gmx::MDLogger& logger)
 {
     /* This routine expects molt->molt[m].ilist to be of size F_NRE and ordered.
@@ -1546,6 +1870,8 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
     // Counters of the removed force-field terms, summed over the molecule types
     //   that contain QM atoms, reported at the end of this routine.
     QmmmRemovedInteractions removed;
+    // Per-atom record of the same changes, written to a separate file.
+    QmmmTopologyReport report;
 
     grpnr = sys->groups.groupNumbers[SimulationAtomGroupType::QuantumMechanics].data();
 
@@ -1612,7 +1938,8 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
                     /* Set the molecule type for the QMMM molblock */
                     molb->type = sys->moltype.size() - 1;
                 }
-                generate_qmexcl_moltype(&sys->moltype[molb->type], grpnr, ir, qmmmMode, logger, &removed);
+                generate_qmexcl_moltype(&sys->moltype[molb->type], grpnr, ir, qmmmMode, logger,
+                                        &removed, index_offset, &report);
             }
             if (grpnr)
             {
@@ -1624,6 +1951,17 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
     if (nr_mol_with_qm_atoms > 0)
     {
         reportQmmmRemovedInteractions(removed, qmmmMode, logger);
+        const char* reportFile = std::getenv("GMX_QMMM_TOPOLOGY_REPORT");
+        if (reportFile == nullptr)
+        {
+            reportFile = "qmmm_topology_report.txt";
+        }
+        writeQmmmTopologyReport(report, qmmmMode, reportFile);
+        GMX_LOG(logger.info)
+                .appendTextFormatted(
+                        "QM/MM: every removed term, pair and exclusion is listed atom by atom in %s\n"
+                        "       (file name set with GMX_QMMM_TOPOLOGY_REPORT).\n",
+                        reportFile);
     }
     if (qmmmMode != GmxQmmmMode::GMX_QMMM_MIMIC && nr_mol_with_qm_atoms > 1)
     {

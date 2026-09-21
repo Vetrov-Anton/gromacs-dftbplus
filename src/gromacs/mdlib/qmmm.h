@@ -348,8 +348,7 @@ public:
     
     // Set up the topological exclusions of the QM--MM electrostatics.
     // Called once, from the constructor.
-    void init_QMMM_exclusions(const gmx_mtop_t* mtop,
-                              const t_forcerec* fr);
+    void init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr, const t_commrec* cr);
 
     // Fill mm[0].qmmmScale for the current short-range MM list.
     // Called from update_QMMM_coord(), i.e. in every step.

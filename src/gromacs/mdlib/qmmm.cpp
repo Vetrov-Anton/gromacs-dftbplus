@@ -47,6 +47,9 @@
 #include <cstring>
 
 #include <algorithm>
+#include <array>
+#include <string>
+#include <vector>
 
 #include "gromacs/domdec/domdec_struct.h"
 #include "gromacs/ewald/pme.h"
@@ -81,6 +84,7 @@
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_lookup.h"
+#include "gromacs/utility/stringutil.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/fatalerror.h"
@@ -553,7 +557,7 @@ QMMM_rec::QMMM_rec(const t_commrec*                 cr,
     printf ("(found_mm_atoms) = %d\n", found_mm_atoms);
 
     // Optional topological exclusions of the QM--MM electrostatics.
-    init_QMMM_exclusions(mtop, fr);
+    init_QMMM_exclusions(mtop, fr, cr);
 
     // these variables get updated in the update QMMMrec // ???
 
@@ -722,7 +726,203 @@ void removeQmmmAtomCharges(gmx_mtop_t* mtop, gmx::ArrayRef<const int> qmmmAtoms)
 // F_CONNBONDS by generate_qmexcl_moltype(), which still satisfies IS_CHEMBOND,
 // and that the bonds crossing the QM/MM boundary are left intact, so the
 // search does see the complete connectivity of the system.
-void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr)
+namespace
+{
+
+//! A QM--MM pair of the QM/MM electrostatics that is removed or scaled
+struct QmmmExcludedPair
+{
+    int  qm;    //!< index into the QM atom list
+    int  mm;    //!< global atom index of the MM atom
+    int  depth; //!< number of bonds between the two atoms
+    real scale; //!< factor applied to the MM charge: 0 (removed) or fudgeQQ
+};
+
+//! "RESnr NAME" label of a global atom
+std::string qmmmGlobalAtomLabel(const gmx_mtop_t* mtop, int globalIndex)
+{
+    int         molb    = 0;
+    int         resnr   = 0;
+    const char* name    = nullptr;
+    const char* resname = nullptr;
+    mtopGetAtomAndResidueName(mtop, globalIndex, &molb, &name, &resnr, &resname, nullptr);
+    return gmx::formatString("%s%d %s", resname, resnr, name);
+}
+
+//! Writes, atom by atom, the QM--MM pairs removed from or scaled in the QM/MM electrostatics
+void writeQmmmExclusionReport(const gmx_mtop_t*                    mtop,
+                              const int*                           indexQM,
+                              int                                  nrQMatoms,
+                              const std::vector<QmmmExcludedPair>& pairs,
+                              const std::vector<std::vector<int>>& bonds,
+                              const std::vector<bool>&             bQM,
+                              int                                  nrexcl,
+                              real                                 fudgeQQ,
+                              int                                  nExcluded,
+                              int                                  nScaled,
+                              const char*                          fileName)
+{
+    FILE* fp = std::fopen(fileName, "w");
+    if (fp == nullptr)
+    {
+        fprintf(stderr, "WARNING: could not open %s for the QM/MM exclusion report\n", fileName);
+        return;
+    }
+    const auto atomText = [mtop, &bQM](int a) {
+        return gmx::formatString("%7d %-14s %s", a + 1, qmmmGlobalAtomLabel(mtop, a).c_str(),
+                                 bQM[a] ? "QM" : "MM");
+    };
+    const auto chargeOf = [mtop](int a) {
+        int molb = 0;
+        return mtopGetAtomParameters(mtop, a, &molb).q;
+    };
+    // Bond distances from one atom, up to 7 bonds, for the labels of the tpr section
+    const auto distances = [&bonds](int start) {
+        std::vector<int> depth(bonds.size(), -1);
+        std::vector<int> frontier{ start };
+        depth[start] = 0;
+        for (int d = 1; d <= 7 && !frontier.empty(); d++)
+        {
+            std::vector<int> next;
+            for (int a : frontier)
+            {
+                for (int b : bonds[a])
+                {
+                    if (depth[b] == -1)
+                    {
+                        depth[b] = d;
+                        next.push_back(b);
+                    }
+                }
+            }
+            frontier = std::move(next);
+        }
+        return depth;
+    };
+    const auto distanceText = [](int d) {
+        return d < 0 ? std::string("> 1-8") : gmx::formatString("1-%d", d + 1);
+    };
+
+    fprintf(fp, "; QM/MM electrostatic exclusions, written by gmx mdrun\n");
+    fprintf(fp, "; GMX_QMMM_NREXCL = %d, fudgeQQ = %g (GMX_QMMM_FUDGEQQ overrides the force-field value)\n",
+            nrexcl, fudgeQQ);
+    fprintf(fp, "; atom numbers are global and 1-based, i.e. the numbering of the input .gro file\n");
+    fprintf(fp, "; labels are RESIDUEnumber ATOMNAME from the topology\n");
+    fprintf(fp, "; bonds are counted along the chemical bonds of the tpr, connections (funct 5) included,\n");
+    fprintf(fp, ";   and the shortest path is used -- the same rule as for the exclusions of grompp\n");
+    fprintf(fp, "; q_MM is the charge of the MM atom; the potential of that atom on the QM atom is\n");
+    fprintf(fp, ";   multiplied by the factor. Every QM--MM pair not listed enters the QM Hamiltonian\n");
+    fprintf(fp, ";   with the full charge.\n");
+    fprintf(fp, "; totals: removed %d, scaled %d\n\n", nExcluded, nScaled);
+    fprintf(fp, "[ qm_atoms ]\n; %d atoms, in the order of the QM group\n", nrQMatoms);
+    for (int j = 0; j < nrQMatoms; j++)
+    {
+        fprintf(fp, "%s\n", atomText(indexQM[j]).c_str());
+    }
+
+    const struct
+    {
+        const char* name;
+        int         depth;
+        bool        scaled;
+        const char* comment;
+    } sections[] = { { "removed_1-2", 1, false, "MM atom bonded to the QM atom: charge removed" },
+                     { "removed_1-3", 2, false, "MM atom two bonds away: charge removed" },
+                     { "scaled_1-4", 3, true, "MM atom three bonds away: charge scaled by fudgeQQ" } };
+    for (const auto& s : sections)
+    {
+        std::vector<const QmmmExcludedPair*> list;
+        for (const auto& p : pairs)
+        {
+            if (p.depth == s.depth)
+            {
+                list.push_back(&p);
+            }
+        }
+        fprintf(fp, "\n[ %s ]\n; %s: %zu pairs\n", s.name, s.comment, list.size());
+        if (s.depth > nrexcl)
+        {
+            fprintf(fp, "; none: GMX_QMMM_NREXCL = %d does not reach 1-%d\n", nrexcl, s.depth + 1);
+            continue;
+        }
+        fprintf(fp, "; %-26s %-26s %10s %8s\n", "QM atom", "MM atom", "q_MM", "factor");
+        for (const auto* p : list)
+        {
+            fprintf(fp, "%s %s %+10.5f %8.4f\n", atomText(indexQM[p->qm]).c_str(),
+                    atomText(p->mm).c_str(), chargeOf(p->mm), p->scale);
+        }
+    }
+
+    // What the force field keeps at the boundary, as stored in the tpr. The terms that
+    //   grompp removed are no longer in the tpr and are listed in the report of grompp.
+    std::vector<std::array<int, 2>> ljExcl, lj14;
+    int                             offset = 0;
+    for (const gmx_molblock_t& molb : mtop->molblock)
+    {
+        const gmx_moltype_t& molt = mtop->moltype[molb.type];
+        for (int mol = 0; mol < molb.nmol; mol++, offset += molt.atoms.nr)
+        {
+            bool hasQm = false;
+            for (int i = 0; i < molt.atoms.nr && !hasQm; i++)
+            {
+                hasQm = bQM[offset + i];
+            }
+            if (!hasQm)
+            {
+                continue;
+            }
+            for (int i = 0; i < molt.atoms.nr; i++)
+            {
+                for (int k : molt.excls[i])
+                {
+                    const int a = offset + i, b = offset + k;
+                    if (a < b && bQM[a] != bQM[b])
+                    {
+                        ljExcl.push_back({ bQM[a] ? a : b, bQM[a] ? b : a });
+                    }
+                }
+            }
+            const InteractionList& il = molt.ilist[F_LJ14];
+            for (int i = 0; i < il.size(); i += 3)
+            {
+                const int a = offset + il.iatoms[i + 1], b = offset + il.iatoms[i + 2];
+                if (bQM[a] != bQM[b])
+                {
+                    lj14.push_back({ bQM[a] ? a : b, bQM[a] ? b : a });
+                }
+            }
+        }
+    }
+    std::sort(ljExcl.begin(), ljExcl.end());
+    std::sort(lj14.begin(), lj14.end());
+    for (const bool excl : { true, false })
+    {
+        const auto& list = excl ? ljExcl : lj14;
+        fprintf(fp, "\n[ %s ]\n", excl ? "tpr_lj_exclusions_qm_mm" : "tpr_lj14_pairs_qm_mm");
+        fprintf(fp, excl ? "; QM--MM pairs excluded from the MM nonbonded interactions (no LJ): %zu\n"
+                         : "; QM--MM LJ-14 pairs kept in the force field: %zu\n",
+                list.size());
+        fprintf(fp, "; for information: this is the force field, not the QM/MM electrostatics above\n");
+        fprintf(fp, "; %-26s %-26s %s\n", "QM atom", "MM atom", "bonds");
+        int              lastQm = -1;
+        std::vector<int> depth;
+        for (const auto& pr : list)
+        {
+            if (pr[0] != lastQm)
+            {
+                depth  = distances(pr[0]);
+                lastQm = pr[0];
+            }
+            fprintf(fp, "%s %s %s\n", atomText(pr[0]).c_str(), atomText(pr[1]).c_str(),
+                    distanceText(depth[pr[1]]).c_str());
+        }
+    }
+    std::fclose(fp);
+}
+
+} // namespace
+
+void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr, const t_commrec* cr)
 {
     QMMM_QMrec& qm_ = qm[0];
 
@@ -742,14 +942,6 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
     if (qmmmNrexcl < 0 || qmmmNrexcl > 3)
     {
         gmx_fatal(FARGS, "GMX_QMMM_NREXCL must be 0, 1, 2 or 3, but it is %d.", qmmmNrexcl);
-    }
-    if (qmmmNrexcl == 0)
-    {
-        fprintf(stdout,
-                "No topological exclusions in the QM/MM electrostatics -- every MM atom within "
-                "the cut-off polarizes the QM density.\nTo change, set environment variable "
-                "GMX_QMMM_NREXCL to 1, 2 or 3.\n");
-        return;
     }
 
     // The 1-4 interactions are scaled rather than removed, with the fudge factor
@@ -793,68 +985,97 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
         bQM[qm_.indexQM[j]] = true;
     }
 
-    // Scaling factor as a function of the bonded distance:
-    //   1-2 and 1-3 are removed, 1-4 is scaled with fudgeQQ.
-    real scaleOfDepth[4] = { real(0.0), real(0.0), real(0.0), real(1.0) };
-    if (qmmmNrexcl >= 3)
-    {
-        scaleOfDepth[3] = qmmmFudgeQQ;
-    }
+    // Every QM--MM pair that is removed or scaled, for the report.
+    std::vector<QmmmExcludedPair> excludedPairs;
 
-    // Breadth-first search of depth qmmmNrexcl from every QM atom.
-    // Assigning the depth on first visit gives the shortest path along bonds,
-    //   i.e. the same convention that grompp uses in do_gen()/gen_nnb().
     mmScaleExc.assign(qm_.nrQMatoms, {});
-    std::vector<int> depth(mtop->natoms, -1);
-    int              nExcluded = 0;
-    int              nScaled   = 0;
-    for (int j = 0; j < qm_.nrQMatoms; j++)
+    int nExcluded = 0;
+    int nScaled   = 0;
+    if (qmmmNrexcl == 0)
     {
-        std::fill(depth.begin(), depth.end(), -1);
-        std::vector<int> frontier{ qm_.indexQM[j] };
-        depth[qm_.indexQM[j]] = 0;
-        for (int d = 1; d <= qmmmNrexcl; d++)
+        fprintf(stdout,
+                "No topological exclusions in the QM/MM electrostatics -- every MM atom within "
+                "the cut-off polarizes the QM density.\nTo change, set environment variable "
+                "GMX_QMMM_NREXCL to 1, 2 or 3.\n");
+    }
+    else
+    {
+        // Scaling factor as a function of the bonded distance:
+        //   1-2 and 1-3 are removed, 1-4 is scaled with fudgeQQ.
+        real scaleOfDepth[4] = { real(0.0), real(0.0), real(0.0), real(1.0) };
+        if (qmmmNrexcl >= 3)
         {
-            std::vector<int> next;
-            for (int a : frontier)
+            scaleOfDepth[3] = qmmmFudgeQQ;
+        }
+
+        // Breadth-first search of depth qmmmNrexcl from every QM atom.
+        // Assigning the depth on first visit gives the shortest path along bonds,
+        //   i.e. the same convention that grompp uses in do_gen()/gen_nnb().
+        std::vector<int> depth(mtop->natoms, -1);
+        for (int j = 0; j < qm_.nrQMatoms; j++)
+        {
+            std::fill(depth.begin(), depth.end(), -1);
+            std::vector<int> frontier{ qm_.indexQM[j] };
+            depth[qm_.indexQM[j]] = 0;
+            for (int d = 1; d <= qmmmNrexcl; d++)
             {
-                for (int b : bonds[a])
+                std::vector<int> next;
+                for (int a : frontier)
                 {
-                    if (depth[b] != -1)
+                    for (int b : bonds[a])
                     {
-                        continue;
-                    }
-                    depth[b] = d;
-                    next.push_back(b);
-                    // QM atoms never occur on the MM list, and the QM--QM
-                    //   interaction is treated by DFTB anyway.
-                    if (bQM[b] || scaleOfDepth[d] == real(1.0))
-                    {
-                        continue;
-                    }
-                    mmScaleExc[j].emplace_back(b, scaleOfDepth[d]);
-                    if (scaleOfDepth[d] == real(0.0))
-                    {
-                        nExcluded++;
-                    }
-                    else
-                    {
-                        nScaled++;
+                        if (depth[b] != -1)
+                        {
+                            continue;
+                        }
+                        depth[b] = d;
+                        next.push_back(b);
+                        // QM atoms never occur on the MM list, and the QM--QM
+                        //   interaction is treated by DFTB anyway.
+                        if (bQM[b] || scaleOfDepth[d] == real(1.0))
+                        {
+                            continue;
+                        }
+                        mmScaleExc[j].emplace_back(b, scaleOfDepth[d]);
+                        excludedPairs.push_back({ j, b, d, scaleOfDepth[d] });
+                        if (scaleOfDepth[d] == real(0.0))
+                        {
+                            nExcluded++;
+                        }
+                        else
+                        {
+                            nScaled++;
+                        }
                     }
                 }
+                frontier = std::move(next);
             }
-            frontier = std::move(next);
+        }
+
+        fprintf(stdout,
+                "Topological exclusions applied to the QM/MM electrostatics (GMX_QMMM_NREXCL = %d).\n",
+                qmmmNrexcl);
+        fprintf(stdout, "  QM--MM pairs up to 1-%d removed from the QM Hamiltonian: %d\n",
+                std::min(qmmmNrexcl, 2) + 1, nExcluded);
+        if (qmmmNrexcl >= 3)
+        {
+            fprintf(stdout, "  1-4 QM--MM pairs scaled with fudgeQQ = %g: %d\n", qmmmFudgeQQ, nScaled);
         }
     }
 
-    fprintf(stdout,
-            "Topological exclusions applied to the QM/MM electrostatics (GMX_QMMM_NREXCL = %d).\n",
-            qmmmNrexcl);
-    fprintf(stdout, "  QM--MM pairs up to 1-%d removed from the QM Hamiltonian: %d\n",
-            std::min(qmmmNrexcl, 2) + 1, nExcluded);
-    if (qmmmNrexcl >= 3)
+    // Detailed report, atom by atom, in a separate file.
+    if (cr == nullptr || MASTER(cr))
     {
-        fprintf(stdout, "  1-4 QM--MM pairs scaled with fudgeQQ = %g: %d\n", qmmmFudgeQQ, nScaled);
+        const char* reportFile = getenv("GMX_QMMM_EXCLUSION_REPORT");
+        if (reportFile == nullptr)
+        {
+            reportFile = "qmmm_exclusion_report.txt";
+        }
+        writeQmmmExclusionReport(mtop, qm_.indexQM, qm_.nrQMatoms, excludedPairs, bonds, bQM,
+                                 qmmmNrexcl, qmmmFudgeQQ, nExcluded, nScaled, reportFile);
+        fprintf(stdout, "Every QM--MM pair of the QM/MM electrostatics that is removed or scaled is listed in %s\n"
+                        "  (file name set with GMX_QMMM_EXCLUSION_REPORT).\n",
+                reportFile);
     }
 }
 
