@@ -1301,6 +1301,31 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
         return mtopGetAtomParameters(mtop, a, &molb).q;
     };
 
+    // The terms by atom: every bond of an atom, and the angles and dihedrals in which it
+    //   is an outer atom; so that the pairs of an atom are found without scanning the system.
+    std::vector<std::vector<int>> bondsOfAtom(natoms), anglesOfAtom(natoms), dihedralsOfAtom(natoms);
+    for (size_t t = 0; t < bondTerms.size(); t++)
+    {
+        bondsOfAtom[bondTerms[t][0]].push_back(static_cast<int>(t));
+        bondsOfAtom[bondTerms[t][1]].push_back(static_cast<int>(t));
+    }
+    for (size_t t = 0; t < angleTerms.size(); t++)
+    {
+        anglesOfAtom[angleTerms[t][0]].push_back(static_cast<int>(t));
+        if (angleTerms[t][2] != angleTerms[t][0])
+        {
+            anglesOfAtom[angleTerms[t][2]].push_back(static_cast<int>(t));
+        }
+    }
+    for (size_t t = 0; t < dihedralTerms.size(); t++)
+    {
+        dihedralsOfAtom[dihedralTerms[t][0]].push_back(static_cast<int>(t));
+        if (dihedralTerms[t][3] != dihedralTerms[t][0])
+        {
+            dihedralsOfAtom[dihedralTerms[t][3]].push_back(static_cast<int>(t));
+        }
+    }
+
     // ---- potential: boundary charge scheme ----
     mmScalePot.assign(qm_.nrQMatoms, {});
     potPoints.clear();
@@ -1476,8 +1501,14 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
     // Along the bond graph, from atom 'start' as seen by QM atom j:
     //   distance d <= min(N,2) removed, d == 3 scaled. The start itself (d = 0) is
     //   only an MM atom for a link atom treated as MM1, and is removed then.
+    std::vector<int> depth(natoms, -1); // reused; only the visited entries are reset
+    std::vector<int> visited;
     const auto addByDistance = [&](int j, int start) {
-        std::vector<int> depth(natoms, -1);
+        for (int v : visited)
+        {
+            depth[v] = -1;
+        }
+        visited.assign(1, start);
         std::vector<int> frontier{ start };
         depth[start] = 0;
         if (!bQM[start])
@@ -1497,6 +1528,7 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
                     }
                     depth[b] = d;
                     next.push_back(b);
+                    visited.push_back(b);
                     if (bQM[b])
                     {
                         continue;
@@ -1510,15 +1542,17 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
 
     // From the bonded terms, for a QM atom: the patterns of the QM/MM boundary
     const auto addQmBonded = [&](int j, int a) {
-        for (const auto& t : bondTerms)
+        for (int ti : bondsOfAtom[a])
         {
+            const auto& t = bondTerms[ti];
             if ((t[0] == a && !bQM[t[1]]) || (t[1] == a && !bQM[t[0]]))
             {
                 addGrad(j, t[0] == a ? t[1] : t[0], real(0.0), "bond QM-MM");
             }
         }
-        for (const auto& t : angleTerms)
+        for (int ti : anglesOfAtom[a])
         {
+            const auto& t = angleTerms[ti];
             for (int dir = 0; dir < 2; dir++)
             {
                 const int x = dir ? t[2] : t[0], m = t[1], y = dir ? t[0] : t[2];
@@ -1529,8 +1563,9 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
                 addGrad(j, y, real(0.0), bQM[m] ? "angle QM2-QM1-MM1" : "angle QM1-MM1-MM2");
             }
         }
-        for (const auto& t : dihedralTerms)
+        for (int ti : dihedralsOfAtom[a])
         {
+            const auto& t = dihedralTerms[ti];
             for (int dir = 0; dir < 2; dir++)
             {
                 const int x = dir ? t[3] : t[0], m1 = dir ? t[2] : t[1], m2 = dir ? t[1] : t[2],
@@ -1563,22 +1598,25 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
     // From the bonded terms, for a link atom standing in for its MM1 atom
     const auto addMm1Bonded = [&](int j, int mm1) {
         addGrad(j, mm1, real(0.0), "LA as MM1: MM1 itself");
-        for (const auto& t : bondTerms)
+        for (int ti : bondsOfAtom[mm1])
         {
+            const auto& t = bondTerms[ti];
             if ((t[0] == mm1 && !bQM[t[1]]) || (t[1] == mm1 && !bQM[t[0]]))
             {
                 addGrad(j, t[0] == mm1 ? t[1] : t[0], real(0.0), "LA as MM1: bond MM1-MM2");
             }
         }
-        for (const auto& t : angleTerms)
+        for (int ti : anglesOfAtom[mm1])
         {
+            const auto& t = angleTerms[ti];
             if ((t[0] == mm1 && !bQM[t[2]]) || (t[2] == mm1 && !bQM[t[0]]))
             {
                 addGrad(j, t[0] == mm1 ? t[2] : t[0], real(0.0), "LA as MM1: angle MM1-X-MM");
             }
         }
-        for (const auto& t : dihedralTerms)
+        for (int ti : dihedralsOfAtom[mm1])
         {
+            const auto& t = dihedralTerms[ti];
             if ((t[0] == mm1 && !bQM[t[3]]) || (t[3] == mm1 && !bQM[t[0]]))
             {
                 addGrad(j, t[0] == mm1 ? t[3] : t[0], fudge, "LA as MM1: dihedral MM1-X-X-MM");
@@ -1666,17 +1704,31 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
 }
 
 // Map the scaling factors of the potential and of the gradient onto the current
-//   short-range MM list. Has to be redone whenever that list changes.
+//   short-range MM list, together with the AMBER charges of the potential. Has to be
+//   redone whenever that list changes, i.e. in every step.
+//   Dense factor arrays are used, so that the inner loops over the MM atoms need no search.
 void QMMM_rec::update_QMMM_exclusion_scaling(int natoms)
 {
     QMMM_QMrec& qm_ = qm[0];
     QMMM_MMrec& mm_ = mm[0];
 
-    mm_.localIndexOfAtom.assign(natoms, -1);
+    // global -> short-range index; only the entries of the previous list are reset
+    if (static_cast<int>(mm_.localIndexOfAtom.size()) != natoms)
+    {
+        mm_.localIndexOfAtom.assign(natoms, -1);
+    }
+    else
+    {
+        for (int g : previousIndexMM)
+        {
+            mm_.localIndexOfAtom[g] = -1;
+        }
+    }
     for (int k = 0; k < mm_.nrMMatoms; k++)
     {
         mm_.localIndexOfAtom[mm_.indexMM[k]] = k;
     }
+    previousIndexMM.assign(mm_.indexMM.begin(), mm_.indexMM.begin() + mm_.nrMMatoms);
 
     const auto fill = [&](const std::vector<std::vector<std::pair<int, real>>>& lists,
                           std::vector<real>&                                   scale) {
@@ -1709,6 +1761,17 @@ void QMMM_rec::update_QMMM_exclusion_scaling(int natoms)
     };
     fill(mmScalePot, mm_.qmmmScalePot);
     fill(mmScaleGrad, mm_.qmmmScaleGrad);
+
+    // AMBER: the charges of the potential on the short-range list, ready for the inner loops
+    potChargesSR.clear();
+    if (!potChargeShift.empty())
+    {
+        potChargesSR.resize(mm_.nrMMatoms);
+        for (int k = 0; k < mm_.nrMMatoms; k++)
+        {
+            potChargesSR[k] = mm_.MMcharges[k] + potChargeShift[mm_.indexMM[k]] * mm_.scalefactor;
+        }
+    }
 }
 
 // Updates the shift and charges of *all of the* MM atoms in QMMMrec.

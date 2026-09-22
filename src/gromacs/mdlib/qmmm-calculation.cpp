@@ -133,9 +133,10 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
   QMMM_MMrec& mm_ = mm[0];
   real rcoul = qm_.rcoulomb;
   real ewaldcoeff_q = qm_.ewaldcoeff_q;
-  // GMX_QMMM_POT_SCHEME=AMBER: the charge of the MM1 atoms, spread over the other MM atoms
-  //   of their molecule; the MM1 atoms themselves are zeroed by qmmmScaleFactorPot()
-  const auto dq = [this, &mm_](int k) { return potChargeShiftOf(mm_.indexMM[k]) * mm_.scalefactor; };
+  // The MM charges seen by the QM atoms: with GMX_QMMM_POT_SCHEME=AMBER including the charge
+  //   of the MM1 atoms spread over the other MM atoms of their molecule (prepared with the
+  //   short-range list); the MM1 atoms themselves are zeroed by qmmmScaleFactorPot()
+  const real* qPot = potChargesSR.empty() ? mm_.MMcharges.data() : potChargesSR.data();
 
   switch (variant) {
 
@@ -163,7 +164,7 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
         // charge zeroed if this is an MM1 atom of the boundary charge scheme
-        const real qMM = (mm_.MMcharges[k] + dq(k)) * mm_.qmmmScaleFactorPot(j, k);
+        const real qMM = qPot[k] * mm_.qmmmScaleFactorPot(j, k);
         if (qMM == 0.) {
           continue;
         }
@@ -197,7 +198,7 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
         // charge zeroed if this is an MM1 atom of the boundary charge scheme
-        const real qMM = (mm_.MMcharges[k] + dq(k)) * mm_.qmmmScaleFactorPot(j, k);
+        const real qMM = qPot[k] * mm_.qmmmScaleFactorPot(j, k);
         if (qMM == 0.) {
           continue;
         }
@@ -225,7 +226,7 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
         // charge zeroed if this is an MM1 atom of the boundary charge scheme
-        const real qMM = (mm_.MMcharges[k] + dq(k)) * mm_.qmmmScaleFactorPot(j, k);
+        const real qMM = qPot[k] * mm_.qmmmScaleFactorPot(j, k);
         if (qMM == 0.) {
           continue;
         }
@@ -258,7 +259,7 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
          * The sum of the two reproduces s/r for the pair, as it should.
          */
         const real s = mm_.qmmmScaleFactorPot(j, k);
-        const real qk = mm_.MMcharges[k] + dq(k); // the same charge as on the grid of calculate_LR_QM_MM()
+        const real qk = qPot[k]; // the same charge as on the grid of calculate_LR_QM_MM()
         real r = pbc_dist_qmmm(qm_.box, qm_.xQM[j], mm_.xMM[k]);
         if (r < 0.001) { // this may occur on the first step of simulation for link atom(s)
           printf("QM/MM PME QM--MM short range exploding for QM=%d, MM=%d. MM charge is %f\n", j+1, k+1, mm_.MMcharges[k]);
@@ -395,8 +396,16 @@ void QMMM_rec::calculate_LR_QM_MM(const t_commrec *cr,
   const int   n  = qm_.nrQMatoms;
   const int   ne = mm_.nrMMatoms_full;
 //const int   ntot = n + ne;
-  // GMX_QMMM_POT_SCHEME=AMBER: the MM1 charges spread over the MM atoms, see calculate_SR_QM_MM()
-  const auto  dq = [this, &mm_](int j) { return potChargeShiftOf(mm_.indexMM_full[j]) * mm_.scalefactor; };
+  // GMX_QMMM_POT_SCHEME=AMBER: the MM1 charges spread over the MM atoms, see calculate_SR_QM_MM();
+  //   the shifts on the full list are prepared once, the list being static
+  if (!potChargeShift.empty() && potShiftFull.empty())
+  {
+      potShiftFull.resize(ne);
+      for (int j=0; j<ne; j++)
+      {
+          potShiftFull[j] = potChargeShiftOf(mm_.indexMM_full[j]) * mm_.scalefactor;
+      }
+  }
 
   /* copy the data into PME structures */
   for (int j=0; j<n; j++)
@@ -419,8 +428,15 @@ void QMMM_rec::calculate_LR_QM_MM(const t_commrec *cr,
       pme_full.x[n + j][XX] = mm_.xMM_full[j][XX];
       pme_full.x[n + j][YY] = mm_.xMM_full[j][YY];
       pme_full.x[n + j][ZZ] = mm_.xMM_full[j][ZZ];
-      pme_full.q[n + j]     = mm_.MMcharges_full[j] + dq(j);
+      pme_full.q[n + j]     = mm_.MMcharges_full[j];
    // printf("MM %5d %8.5f %8.5f %8.5f %8.5f\n", j+1, pme->x[n+j][XX], pme->x[n+j][YY], pme->x[n+j][ZZ], pme->q[n + j]);
+  }
+  if (!potShiftFull.empty())
+  {
+      for (int j=0; j<ne; j++)
+      {
+          pme_full.q[n + j] += potShiftFull[j];
+      }
   }
   
 //static struct timespec time1, time2;
@@ -452,7 +468,7 @@ void QMMM_rec::calculate_LR_QM_MM(const t_commrec *cr,
        clear_rvec(sum_qx);
     // rvec subsum_qx;
 	   for (int j=0; j<ne; j++) {
-           svmul(mm_.MMcharges_full[j] + dq(j), mm_.xMM_full[j], qx);
+           svmul(pme_full.q[n + j], mm_.xMM_full[j], qx);
            rvec_inc(sum_qx, qx);
         // if (j%3==0) {
         //   printf("MOL %4d DIPOLE %5.1f %5.1f %5.1f\n", j/3,

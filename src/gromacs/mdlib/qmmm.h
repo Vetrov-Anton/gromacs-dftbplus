@@ -354,6 +354,14 @@ public:
     //   on the QM atoms (in e/nm, before the conversion to atomic units).
     void add_boundary_scheme_potential(int variant, real* pot);
 
+    // AMBER: the MM charges of the potential on the current short-range list (topology charge
+    //   plus shift, incl. scalefactor), rebuilt with the list; and the shifts on the full MM
+    //   list (index of xMM_full, incl. scalefactor), built on first use. Empty otherwise.
+    std::vector<real> potChargesSR;
+    std::vector<real> potShiftFull;
+    // Global atoms of the previous short-range list, to reset localIndexOfAtom cheaply.
+    std::vector<int> previousIndexMM;
+
     QMMM_rec(const t_commrec*                 cr,
              const gmx_mtop_t*                mtop,
              const t_inputrec*                ir,
