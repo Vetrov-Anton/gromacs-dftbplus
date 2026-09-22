@@ -261,7 +261,8 @@ From: ubuntu:24.04
 
     QM/MM settings of this image
     ----------------------------
-    %environment presets, each overridable per run with --env VAR=value:
+    Presets of the image environment, each overridable per run with
+    --env VAR=value:
 
         GMX_QMMM_VARIANT=1             PME electrostatics between QM and MM
         GMX_QMMM_BONDED_SCHEME=classic grompp: remove a bonded term at the
