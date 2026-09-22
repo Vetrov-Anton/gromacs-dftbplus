@@ -1150,15 +1150,15 @@ static bool isQmmmKeptRestraint(int ftype)
  * The bonded interactions that involve both QM and MM atoms are treated
  * according to one of two conventions, selected with \p qmmmMode:
  *
- * GMX_QMMM_ORIGINAL ("classic", the default and the historical GROMACS
- *   behaviour): a bonded interaction is removed as soon as all but one of its
- *   atoms are QM (i.e. a QM-QM-MM angle and a QM-QM-QM-MM dihedral are removed),
+ * GMX_QMMM_ORIGINAL ("classic", the default): a bonded interaction is removed
+ *   as soon as all but one of its atoms are QM (i.e. a QM-QM-MM angle and a
+ *   QM-QM-QM-MM dihedral are removed),
  *   because the QM calculation with the link atom is assumed to describe it
  *   already, and keeping the force-field term would count it twice.
  *   The LJ between QM and MM atoms follows the exclusion rules of the force
- *   field (nrexcl and [ pairs ]). Only with \p excludeBoundaryLJ, as in earlier
- *   versions, the nonbonded and 1-4 interactions of every QM atom with the MM
- *   atoms covalently bound to the QM region are excluded as well.
+ *   field (nrexcl and [ pairs ]). With \p excludeBoundaryLJ, the nonbonded and
+ *   1-4 interactions of every QM atom with the MM atoms covalently bound to the
+ *   QM region are excluded as well.
  *
  * GMX_QMMM_AMBER ("amber"): only those interactions are removed whose atoms are
  *   all QM; every term with at least one MM atom is kept at the force-field
@@ -2013,8 +2013,7 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
     QmmmTopologyReport report;
 
     // LJ between the QM and the MM atoms: by the exclusion rules of the force field
-    //   (default), or, as in earlier versions, with the boundary MM atoms excluded
-    //   from every QM atom.
+    //   (default), or with the boundary MM atoms excluded from every QM atom.
     bool        excludeBoundaryLJ = false;
     const char* ljEnv             = std::getenv("GMX_QMMM_LJ_SCHEME");
     if (ljEnv != nullptr && gmx_strcasecmp(ljEnv, "exclude") == 0)
@@ -2036,7 +2035,7 @@ void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, warninp* wi, GmxQmmmMode q
                         excludeBoundaryLJ
                                 ? "QM/MM: GMX_QMMM_LJ_SCHEME=exclude -- the LJ and LJ-14 "
                                   "interactions of every QM atom with the MM atoms bound to the "
-                                  "QM region are excluded (the behaviour of earlier versions)."
+                                  "QM region are excluded."
                                 : "QM/MM: the LJ between the QM and the MM atoms follows the "
                                   "exclusion rules of the force field (nrexcl and [ pairs ]); "
                                   "only the LJ within the QM region is excluded. To exclude also "

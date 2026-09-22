@@ -190,13 +190,19 @@ From: ubuntu:24.04
     # particular PLUMED build, so another one needs no GROMACS rebuild.
     export PLUMED_KERNEL=/opt/plumed/lib/libplumedKernel.so
     export PLUMED_ROOT=/opt/plumed/lib/plumed
-    # QM/MM electrostatics variant (0..4); 1 = full electrostatic QM/MM
-    export GMX_QMMM_VARIANT=1
     export OMP_NUM_THREADS=1
-    # Topological exclusions in the QM/MM electrostatics.  The code defaults to
-    # 0 (none); 3 excludes 1-2 and 1-3 QM-MM pairs and scales 1-4 pairs by
-    # fudgeQQ.  Override per run with --env GMX_QMMM_NREXCL=<0..3>.
-    export GMX_QMMM_NREXCL=3
+    # QM/MM settings of this image (README.md); override per run with --env VAR=value.
+    # Electrostatics: 0 none, 1 PME, 2 switched cut-off, 3 reaction field, 4 shifted
+    export GMX_QMMM_VARIANT=1
+    # grompp: bonded terms at the QM/MM boundary, and the QM-MM Lennard-Jones
+    export GMX_QMMM_BONDED_SCHEME=classic
+    export GMX_QMMM_LJ_SCHEME=forcefield
+    # mdrun: charges of the MM1 atoms in the external potential passed to DFTB+
+    export GMX_QMMM_POT_SCHEME=CS
+    # mdrun: QM-MM pairs removed (1-2, 1-3) and scaled (1-4) in the QM/MM gradient,
+    #   and the link atoms treated as their MM1 atom there
+    export GMX_QMMM_GRAD_EXCL=3
+    export GMX_QMMM_GRAD_LA=MM1
 
 %runscript
     exec gmx "$@"
@@ -253,31 +259,30 @@ From: ubuntu:24.04
         apptainer exec gmx_dftbplus.sif gmx grompp -f md.mdp -c c.gro -p t.top -o md.tpr
         apptainer exec gmx_dftbplus.sif mpirun -np 1 gmx mdrun -deffnm md -plumed plumed.dat
 
-    QM/MM exclusions - READ THIS
+    QM/MM settings of this image
     ----------------------------
-    THIS IMAGE SETS GMX_QMMM_NREXCL=3 IN %environment, which is NOT the code's
-    own default.  Built from bare sources the QM/MM electrostatics applies no
-    topological exclusions at all: every MM atom within the cut-off polarizes
-    the QM density, covalently bonded neighbours included.
+    %environment presets, each overridable per run with --env VAR=value:
 
-        GMX_QMMM_NREXCL=0              no exclusions (the code's own default,
-                                       NOT this image's)
-        GMX_QMMM_NREXCL=1|2|3          exclude up to 1-2 / 1-3 / 1-4 neighbours;
-                                       1-4 pairs are scaled by fudgeQQ
-        GMX_QMMM_FUDGEQQ=<x>           override the force field's fudgeQQ
+        GMX_QMMM_VARIANT=1             PME electrostatics between QM and MM
+        GMX_QMMM_BONDED_SCHEME=classic grompp: remove a bonded term at the
+                                       boundary when all but one atom is QM
+        GMX_QMMM_LJ_SCHEME=forcefield  grompp: QM-MM Lennard-Jones by the
+                                       exclusion rules of the force field
+        GMX_QMMM_POT_SCHEME=CS         mdrun: the MM1 charge is shifted to the
+                                       MM2 atoms, with a dipole-restoring pair
+                                       of point charges, in the potential
+                                       passed to DFTB+ (none|RC|RCD|CS|AMBER)
+        GMX_QMMM_GRAD_EXCL=3           mdrun: QM-MM gradient without the 1-2
+                                       and 1-3 pairs, 1-4 pairs scaled by
+                                       fudgeQQ (0|1|2|3|BONDED)
+        GMX_QMMM_GRAD_LA=MM1           mdrun: link atoms are excluded in the
+                                       gradient as if they were their MM1 atom
 
-    mdrun prints which setting is in effect; check that line before trusting a
-    run:
-
-        Topological exclusions applied to the QM/MM electrostatics
-        (GMX_QMMM_NREXCL = 3).
-
-    To get the bare behaviour back:  --env GMX_QMMM_NREXCL=0
-
-    Note that GMX_QMMM_NREXCL is purely electrostatic.  It scales the MM point
-    charges entering the QM Hamiltonian and never touches Lennard-Jones: QM-MM
-    van der Waals is handled by the classical force field throughout, whatever
-    it is set to.
+    The potential and the gradient follow separate rules.  mdrun prints the
+    settings in effect, and grompp and mdrun write qmmm_topology_report.txt
+    and qmmm_exclusion_report.txt with every removed term and every removed or
+    scaled QM-MM pair (GMX_QMMM_REPORTS=off switches them off).  See README.md
+    for all variables.
 
     Other notes
     -----------
@@ -289,9 +294,8 @@ From: ubuntu:24.04
         Analysis{CalculateForces} with Analysis{PrintForces}.  Without it the
         parser halts on the unknown key, and merely deleting the key makes the
         run die after the SCC with "Forces not available".
-      * GMX_QMMM_VARIANT selects the QM/MM electrostatics scheme (0..4);
-        preset to 1 here.
-      * Legacy GROMACS QM/MM has no domain decomposition - use a single rank.
+      * The GROMACS QM/MM interface has no domain decomposition - use a single
+        rank.
       * Swapping PLUMED without rebuilding GROMACS:
             apptainer exec -B /my/plumed:/my/plumed \
                 --env PLUMED_KERNEL=/my/plumed/lib/libplumedKernel.so \

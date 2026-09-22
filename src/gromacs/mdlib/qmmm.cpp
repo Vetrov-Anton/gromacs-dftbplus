@@ -1089,17 +1089,6 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
                 "      The treatment of the bonded interactions at the QM/MM boundary is "
                 "fixed in the tpr file.\n");
     }
-    for (const char* removed : { "GMX_QMMM_NREXCL", "GMX_QMMM_FUDGEQQ" })
-    {
-        if (getenv(removed) != nullptr)
-        {
-            fprintf(stdout,
-                    "NOTE: %s is no longer used and is ignored. The potential is set with "
-                    "GMX_QMMM_POT_SCHEME,\n      the gradient with GMX_QMMM_GRAD_EXCL, "
-                    "GMX_QMMM_FUDGE_QQ and GMX_QMMM_GRAD_LA.\n",
-                    removed);
-        }
-    }
 
     // ---- settings ----
     const char* env = getenv("GMX_QMMM_POT_SCHEME");
