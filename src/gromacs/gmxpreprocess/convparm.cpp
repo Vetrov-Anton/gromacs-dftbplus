@@ -104,8 +104,16 @@ static void set_ljparams(int comb, double reppow, double v, double w, real* c6, 
 
 /* A return value of 0 means parameters were assigned successfully,
  * returning -1 means this is an all-zero interaction that should not be added.
+ * With keepZeroAnglesDihedrals (QM/MM), the all-zero angles and proper dihedrals are kept:
+ * they contribute nothing, but mdrun needs them to find the bonded QM--MM pairs
+ * (GMX_QMMM_GRAD_EXCL=BONDED).
  */
-static int assign_param(t_functype ftype, t_iparams* newparam, gmx::ArrayRef<const real> old, int comb, double reppow)
+static int assign_param(t_functype                ftype,
+                        t_iparams*                newparam,
+                        gmx::ArrayRef<const real> old,
+                        int                       comb,
+                        double                    reppow,
+                        bool                      keepZeroAnglesDihedrals)
 {
     bool all_param_zero = true;
 
@@ -123,8 +131,11 @@ static int assign_param(t_functype ftype, t_iparams* newparam, gmx::ArrayRef<con
 
     if (all_param_zero)
     {
-        if (IS_ANGLE(ftype) || IS_RESTRAINT_TYPE(ftype) || ftype == F_IDIHS || ftype == F_PDIHS
-            || ftype == F_PIDIHS || ftype == F_RBDIHS || ftype == F_FOURDIHS)
+        const bool keep = keepZeroAnglesDihedrals
+                          && (IS_ANGLE(ftype) || ftype == F_PDIHS || ftype == F_RBDIHS || ftype == F_FOURDIHS);
+        if (!keep
+            && (IS_ANGLE(ftype) || IS_RESTRAINT_TYPE(ftype) || ftype == F_IDIHS || ftype == F_PDIHS
+                || ftype == F_PIDIHS || ftype == F_RBDIHS || ftype == F_FOURDIHS))
         {
             return -1;
         }
@@ -292,9 +303,11 @@ static int assign_param(t_functype ftype, t_iparams* newparam, gmx::ArrayRef<con
             newparam->pdihs.phiB = old[3];
             newparam->pdihs.cpB  = old[4];
             /* If both force constants are zero there is no interaction. Return -1 to signal
-             * this entry should NOT be added.
+             * this entry should NOT be added -- except for a proper dihedral with QM/MM,
+             * see keepZeroAnglesDihedrals.
              */
-            if (fabs(newparam->pdihs.cpA) < GMX_REAL_MIN && fabs(newparam->pdihs.cpB) < GMX_REAL_MIN)
+            if (fabs(newparam->pdihs.cpA) < GMX_REAL_MIN && fabs(newparam->pdihs.cpB) < GMX_REAL_MIN
+                && !(keepZeroAnglesDihedrals && ftype == F_PDIHS))
             {
                 return -1;
             }
@@ -448,12 +461,13 @@ static int enter_params(gmx_ffparams_t*           ffparams,
                         int                       comb,
                         real                      reppow,
                         int                       start,
-                        bool                      bAppend)
+                        bool                      bAppend,
+                        bool                      keepZeroAnglesDihedrals)
 {
     t_iparams newparam;
     int       rc;
 
-    if ((rc = assign_param(ftype, &newparam, forceparams, comb, reppow)) < 0)
+    if ((rc = assign_param(ftype, &newparam, forceparams, comb, reppow, keepZeroAnglesDihedrals)) < 0)
     {
         /* -1 means this interaction is all-zero and should not be added */
         return rc;
@@ -513,13 +527,15 @@ static void enter_function(const InteractionsOfType* p,
                            gmx_ffparams_t*           ffparams,
                            InteractionList*          il,
                            bool                      bNB,
-                           bool                      bAppend)
+                           bool                      bAppend,
+                           bool                      keepZeroAnglesDihedrals = false)
 {
     int start = ffparams->numTypes();
 
     for (auto& parm : p->interactionTypes)
     {
-        int type = enter_params(ffparams, ftype, parm.forceParam(), comb, reppow, start, bAppend);
+        int type = enter_params(ffparams, ftype, parm.forceParam(), comb, reppow, start, bAppend,
+                                keepZeroAnglesDihedrals);
         /* Type==-1 is used as a signal that this interaction is all-zero and should not be added. */
         if (!bNB && type >= 0)
         {
@@ -538,7 +554,8 @@ void convertInteractionsOfType(int                                      atnr,
                                int                                      comb,
                                double                                   reppow,
                                real                                     fudgeQQ,
-                               gmx_mtop_t*                              mtop)
+                               gmx_mtop_t*                              mtop,
+                               bool                                     keepZeroAnglesDihedrals)
 {
     int             i;
     unsigned long   flags;
@@ -569,7 +586,8 @@ void convertInteractionsOfType(int                                      atnr,
                 && ((flags & IF_BOND) || (flags & IF_VSITE) || (flags & IF_CONSTRAINT)))
             {
                 enter_function(&(interactions[i]), static_cast<t_functype>(i), comb, reppow, ffp,
-                               &molt->ilist[i], FALSE, (i == F_POSRES || i == F_FBPOSRES));
+                               &molt->ilist[i], FALSE, (i == F_POSRES || i == F_FBPOSRES),
+                               keepZeroAnglesDihedrals);
             }
         }
     }

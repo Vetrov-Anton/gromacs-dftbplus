@@ -260,22 +260,29 @@ public:
     std::vector<real>       MMcharges_full;
     std::vector<int>        shiftMM_full;
 
-    // Scaling of the QM--MM electrostatic interaction due to the topological
-    // (1-2, 1-3, 1-4) exclusions, see QMMM_rec::init_QMMM_exclusions().
-    // Both arrays are only filled when the exclusions are switched on.
-    // qmmmScale is indexed as [j * nrMMatoms + k] for QM atom j and
-    //   MM atom k of the short-range list (1);
+    // Scaling of the QM--MM electrostatic interaction, see QMMM_rec::init_QMMM_exclusions().
+    // The external potential passed to DFTB+ and the QM/MM gradient use separate factors:
+    //   qmmmScalePot  -- the MM1 atoms zeroed by a boundary charge scheme (GMX_QMMM_POT_SCHEME);
+    //   qmmmScaleGrad -- the exclusions and scalings of the gradient (GMX_QMMM_GRAD_EXCL).
+    // Both are indexed as [j * nrMMatoms + k] for QM atom j and MM atom k of the
+    //   short-range list (1), and left empty when there is nothing to scale;
     // localIndexOfAtom maps a global atom number onto its position
     //   in the short-range list (1), or -1 if it is not on that list.
-    std::vector<real> qmmmScale;
+    std::vector<real> qmmmScalePot;
+    std::vector<real> qmmmScaleGrad;
     std::vector<int>  localIndexOfAtom;
 
-    //! Scaling factor of the electrostatic interaction of QM atom \p j
-    //  with MM atom \p k of the short-range list; 1 when exclusions are off.
-    real qmmmScaleFactor(int j, int k) const
+    //! Factor of the charge of MM atom \p k in the external potential on QM atom \p j
+    real qmmmScaleFactorPot(int j, int k) const
     {
-        return qmmmScale.empty() ? real(1.0)
-                                 : qmmmScale[static_cast<size_t>(j) * nrMMatoms + k];
+        return qmmmScalePot.empty() ? real(1.0)
+                                    : qmmmScalePot[static_cast<size_t>(j) * nrMMatoms + k];
+    }
+    //! Factor of the QM/MM gradient between QM atom \p j and MM atom \p k
+    real qmmmScaleFactorGrad(int j, int k) const
+    {
+        return qmmmScaleGrad.empty() ? real(1.0)
+                                     : qmmmScaleGrad[static_cast<size_t>(j) * nrMMatoms + k];
     }
 
     void init_MMrec(real       scalefactor_in,
@@ -297,17 +304,55 @@ public:
     PbcType                  pbcType;
     struct gmx_pme_t* const* pmedata;
 
-    // Topological (1-2, 1-3, 1-4) exclusions of the QM--MM electrostatics.
-    // Highest excluded bonded neighbour order, as read from GMX_QMMM_NREXCL;
-    //   0 (default) reproduces the behaviour of the code without exclusions.
-    int  qmmmNrexcl = 0;
-    // Factor applied to the 1-4 QM--MM interaction when qmmmNrexcl == 3;
-    //   defaults to fudgeQQ of the force field.
-    real qmmmFudgeQQ = 1.0;
-    // For every QM atom, the list of (global MM atom index, scaling factor)
-    //   for those MM atoms that are within qmmmNrexcl bonds of it.
-    //   Built once at initialization; only a handful of entries per QM atom.
-    std::vector<std::vector<std::pair<int, real>>> mmScaleExc;
+    // Treatment of the QM/MM boundary in the QM--MM electrostatics, see init_QMMM_exclusions().
+    //
+    // External potential passed to DFTB+ (GMX_QMMM_POT_SCHEME): with a boundary charge
+    //   scheme the charge of every MM1 atom is removed from the potential on all QM atoms,
+    //   and fictitious point charges near MM1 and MM2 are added. Both are seen by the QM
+    //   atoms only; the topology, the MM interactions and the gradient are not affected.
+    enum class PotScheme
+    {
+        None, // every MM charge enters the potential in full
+        RC,   // redistributed charge: q(MM1)/n on the midpoints of the MM1-MM2 bonds
+        RCD,  // redistributed charge and dipole: 2q(MM1)/n there, q(MM2) - q(MM1)/n
+        CS,   // charge shift: q(MM2) + q(MM1)/n, and +-q(MM1)/n at 0.94 and 1.06 of MM1->MM2
+        Amber // as in AMBER: the MM1 charges spread evenly over the other MM atoms of their molecule
+    };
+    PotScheme potScheme = PotScheme::None;
+    // With PotScheme::Amber, the charge added to each atom (global index) in the potential
+    //   only, before mm[0].scalefactor: the MM1 charges of a molecule divided by the number
+    //   of its other MM atoms, on those atoms; zero elsewhere. Empty with the other schemes.
+    std::vector<real> potChargeShift;
+    //! Charge added to global atom \p a in the potential (without mm[0].scalefactor)
+    real potChargeShiftOf(int a) const { return potChargeShift.empty() ? real(0.0) : potChargeShift[a]; }
+    // A fictitious point charge of the potential: charge q at x(a) + f * (x(b) - x(a)),
+    //   a and b global atom numbers (a = MM1, b = MM2)
+    struct PotPoint
+    {
+        int  a;
+        int  b;
+        real f;
+        real q;
+    };
+    std::vector<PotPoint> potPoints;
+    // For every QM atom, the (global MM atom index, factor) pairs of the potential
+    //   and of the gradient. Built once at initialization.
+    std::vector<std::vector<std::pair<int, real>>> mmScalePot;
+    std::vector<std::vector<std::pair<int, real>>> mmScaleGrad;
+
+    // Exclusions of the QM/MM gradient (GMX_QMMM_GRAD_EXCL): gradExcl = 0..3 bonds along
+    //   the bond graph, or gradBonded to take them from the bonds, angles and proper
+    //   dihedrals of the topology; 1-4 pairs are scaled with gradFudgeQQ (GMX_QMMM_FUDGE_QQ).
+    int  gradExcl    = 3;
+    bool gradBonded  = false;
+    real gradFudgeQQ = 1.0;
+    // Link atoms are excluded in the gradient as if they were their QM1 atom or,
+    //   by default, their MM1 atom (GMX_QMMM_GRAD_LA).
+    bool gradLaAsMM1 = true;
+
+    // Add the fictitious point charges of the boundary scheme to the potential
+    //   on the QM atoms (in e/nm, before the conversion to atomic units).
+    void add_boundary_scheme_potential(int variant, real* pot);
 
     QMMM_rec(const t_commrec*                 cr,
              const gmx_mtop_t*                mtop,
@@ -350,7 +395,7 @@ public:
     // Called once, from the constructor.
     void init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr, const t_commrec* cr);
 
-    // Fill mm[0].qmmmScale for the current short-range MM list.
+    // Fill mm[0].qmmmScalePot and mm[0].qmmmScaleGrad for the current short-range MM list.
     // Called from update_QMMM_coord(), i.e. in every step.
     void update_QMMM_exclusion_scaling(int natoms);
 

@@ -2129,8 +2129,12 @@ int gmx_grompp(int argc, char* argv[])
     }
 
     const int ntype = atypes.size();
+    /* With QM/MM, keep the angles and proper dihedrals whose parameters are all zero:
+     * they contribute nothing, but mdrun needs every bonded quadruple to find the
+     * QM--MM pairs of the gradient with GMX_QMMM_GRAD_EXCL=BONDED.
+     */
     convertInteractionsOfType(ntype, interactions, mi, intermolecular_interactions.get(), comb,
-                              reppow, fudgeQQ, &sys);
+                              reppow, fudgeQQ, &sys, ir->bQMMM);
 
     if (debug)
     {

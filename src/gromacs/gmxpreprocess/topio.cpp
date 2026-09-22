@@ -1838,7 +1838,7 @@ static void writeQmmmTopologyReport(const QmmmTopologyReport& report, GmxQmmmMod
                                           : "forcefield -- exclusion rules of the force field (nrexcl, [ pairs ])");
     std::fprintf(fp, "; atom numbers are global and 1-based, i.e. the numbering of the input .gro file\n");
     std::fprintf(fp, "; labels are RESIDUEnumber ATOMNAME from the topology; QM/MM marks the region\n");
-    std::fprintf(fp, "; the QM/MM electrostatic exclusions (GMX_QMMM_NREXCL) are applied by mdrun and\n");
+    std::fprintf(fp, "; the QM/MM electrostatics at the boundary (GMX_QMMM_POT_SCHEME, GMX_QMMM_GRAD_EXCL) are set by mdrun and\n");
     std::fprintf(fp, ";   listed in its own report, not here\n\n");
 
     std::fprintf(fp, "[ qm_atoms ]\n; %zu atoms; their charges are set to zero in the tpr\n", report.qmAtoms.size());

@@ -133,6 +133,9 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
   QMMM_MMrec& mm_ = mm[0];
   real rcoul = qm_.rcoulomb;
   real ewaldcoeff_q = qm_.ewaldcoeff_q;
+  // GMX_QMMM_POT_SCHEME=AMBER: the charge of the MM1 atoms, spread over the other MM atoms
+  //   of their molecule; the MM1 atoms themselves are zeroed by qmmmScaleFactorPot()
+  const auto dq = [this, &mm_](int k) { return potChargeShiftOf(mm_.indexMM[k]) * mm_.scalefactor; };
 
   switch (variant) {
 
@@ -159,8 +162,8 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       int under_r1=0, under_rc=0;
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
-        // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
-        const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+        // charge zeroed if this is an MM1 atom of the boundary charge scheme
+        const real qMM = (mm_.MMcharges[k] + dq(k)) * mm_.qmmmScaleFactorPot(j, k);
         if (qMM == 0.) {
           continue;
         }
@@ -193,8 +196,8 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       pot[j] = 0.;
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
-        // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
-        const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+        // charge zeroed if this is an MM1 atom of the boundary charge scheme
+        const real qMM = (mm_.MMcharges[k] + dq(k)) * mm_.qmmmScaleFactorPot(j, k);
         if (qMM == 0.) {
           continue;
         }
@@ -221,8 +224,8 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       pot[j] = 0.;
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
-        // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
-        const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+        // charge zeroed if this is an MM1 atom of the boundary charge scheme
+        const real qMM = (mm_.MMcharges[k] + dq(k)) * mm_.qmmmScaleFactorPot(j, k);
         if (qMM == 0.) {
           continue;
         }
@@ -247,24 +250,25 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       pot[j] = 0.;
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
-        /* With PME, a topologically excluded (or scaled) QM--MM pair needs two things:
+        /* With PME, a QM--MM pair zeroed by the boundary charge scheme needs two things:
          *   - its real-space term erfc(beta*r)/r is scaled with s, as for the cut-off variants;
          *   - the fraction (1-s) of its reciprocal-space term, which is computed on the grid
          *     over the full MM list in calculate_LR_QM_MM() and cannot be scaled there,
          *     is subtracted here as the pair term erf(beta*r)/r.
          * The sum of the two reproduces s/r for the pair, as it should.
          */
-        const real s = mm_.qmmmScaleFactor(j, k);
+        const real s = mm_.qmmmScaleFactorPot(j, k);
+        const real qk = mm_.MMcharges[k] + dq(k); // the same charge as on the grid of calculate_LR_QM_MM()
         real r = pbc_dist_qmmm(qm_.box, qm_.xQM[j], mm_.xMM[k]);
         if (r < 0.001) { // this may occur on the first step of simulation for link atom(s)
           printf("QM/MM PME QM--MM short range exploding for QM=%d, MM=%d. MM charge is %f\n", j+1, k+1, mm_.MMcharges[k]);
           if (s != 1.) { // erf(beta*r)/r is regular at r -> 0, so the correction still applies
-            pot[j] -= (1. - s) * mm_.MMcharges[k] * M_2_SQRTPI * ewaldcoeff_q;
+            pot[j] -= (1. - s) * qk * M_2_SQRTPI * ewaldcoeff_q;
           }
         } else {
-          pot[j] += s * mm_.MMcharges[k] / r * gmx_erfc(ewaldcoeff_q * r);
+          pot[j] += s * qk / r * gmx_erfc(ewaldcoeff_q * r);
           if (s != 1.) {
-            pot[j] -= (1. - s) * mm_.MMcharges[k] / r * gmx_erf(ewaldcoeff_q * r);
+            pot[j] -= (1. - s) * qk / r * gmx_erf(ewaldcoeff_q * r);
           }
         }
       } // for k
@@ -276,6 +280,12 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
     ;
   } // switch variant
 
+  /* The fictitious charges of the boundary charge scheme, if any. */
+  if (variant != eqmmmVACUO)
+  {
+      add_boundary_scheme_potential(variant, pot);
+  }
+
   /* Convert the result to atomic units. */
   for (int j=0; j<qm_.nrQMatoms; j++)
   {
@@ -283,6 +293,88 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
    // printf("SR QM/MM POT in a.u.: %d %8.5f\n", j+1, pot[j]);
   }
 } // calculate_SR_QM_MM
+
+/* Potential of the fictitious point charges of the boundary charge scheme
+ *   (GMX_QMMM_POT_SCHEME = RC, RCD or CS) on the QM atoms, in e/nm.
+ * The points exist for the QM atoms only: they are not on the PME grid and
+ *   do not enter the gradient. With PME they act with the full 1/r, since they
+ *   have no reciprocal-space part; with the cut-off variants they act with the
+ *   same kernel as the MM atoms. Their positions follow the MM1 and MM2 atoms.
+ */
+void QMMM_rec::add_boundary_scheme_potential(int variant, real *pot)
+{
+  if (potPoints.empty())
+  {
+      return;
+  }
+  QMMM_QMrec& qm_ = qm[0];
+  QMMM_MMrec& mm_ = mm[0];
+  const real rcoul = qm_.rcoulomb;
+
+  // the potential of a unit charge at distance r, as for the MM atoms of this variant
+  const auto kernel = [variant, rcoul](real r) -> real {
+      switch (variant)
+      {
+          case eqmmmSWITCH:
+          {
+              const real r_1   = rcoul;
+              const real r_d   = QMMM_SWITCH;
+              const real r_c   = r_1 + r_d;
+              const real big_a = (5 * r_c - 2 * r_1) / (CUB(r_c) * SQR(r_d));
+              const real big_b = -(4 * r_c - 2 * r_1) / (CUB(r_c) * CUB(r_d));
+              const real big_c = -1 / r_c - big_a / 3 * CUB(r_d) - big_b / 4 * QRT(r_d);
+              if (r < r_1)
+              {
+                  return 1. / r + big_c;
+              }
+              if (r < r_c)
+              {
+                  return 1. / r + big_a / 3. * CUB(r - r_1) + big_b / 4. * QRT(r - r_1) + big_c;
+              }
+              return 0.;
+          }
+          case eqmmmRFIELD:
+              return r < rcoul ? 1. / r + SQR(r) / 2. / CUB(rcoul) - 3. / (2. * rcoul) : 0.;
+          case eqmmmSHIFT:
+              return r < rcoul ? 1. / r - SQR(r) / CUB(rcoul) + 3. / SQR(rcoul) * r - 3. / rcoul : 0.;
+          case eqmmmPME:
+              return 1. / r;
+          default:
+              return 0.;
+      }
+  };
+
+  for (const PotPoint& p : potPoints)
+  {
+      const int ka = mm_.localIndexOfAtom[p.a];
+      const int kb = mm_.localIndexOfAtom[p.b];
+      if (ka < 0 || kb < 0)
+      {
+          gmx_fatal(FARGS,
+                    "QM/MM boundary charge scheme: atom %d or %d is not on the short-range MM list "
+                    "of the QM atoms. Increase rcoulomb.",
+                    p.a + 1, p.b + 1);
+      }
+      rvec ab, x;
+      pbc_dx_qmmm(qm_.box, mm_.xMM[kb], mm_.xMM[ka], ab); // x(b) - x(a), nearest image
+      for (int d = 0; d < DIM; d++)
+      {
+          x[d] = mm_.xMM[ka][d] + p.f * ab[d];
+      }
+      const real q = p.q * mm_.scalefactor;
+      for (int j = 0; j < qm_.nrQMatoms; j++)
+      {
+          const real r = pbc_dist_qmmm(qm_.box, qm_.xQM[j], x);
+          if (r < 0.001)
+          {
+              printf("QM/MM boundary charge exploding for QM=%d near MM atoms %d, %d\n", j + 1,
+                     p.a + 1, p.b + 1);
+              continue;
+          }
+          pot[j] += q * kernel(r);
+      }
+  }
+} // add_boundary_scheme_potential
 
 /* Calculate the effect of environment with PME,
  * EXCLUDING the periodic images of QM charges at this stage!
@@ -303,6 +395,8 @@ void QMMM_rec::calculate_LR_QM_MM(const t_commrec *cr,
   const int   n  = qm_.nrQMatoms;
   const int   ne = mm_.nrMMatoms_full;
 //const int   ntot = n + ne;
+  // GMX_QMMM_POT_SCHEME=AMBER: the MM1 charges spread over the MM atoms, see calculate_SR_QM_MM()
+  const auto  dq = [this, &mm_](int j) { return potChargeShiftOf(mm_.indexMM_full[j]) * mm_.scalefactor; };
 
   /* copy the data into PME structures */
   for (int j=0; j<n; j++)
@@ -325,7 +419,7 @@ void QMMM_rec::calculate_LR_QM_MM(const t_commrec *cr,
       pme_full.x[n + j][XX] = mm_.xMM_full[j][XX];
       pme_full.x[n + j][YY] = mm_.xMM_full[j][YY];
       pme_full.x[n + j][ZZ] = mm_.xMM_full[j][ZZ];
-      pme_full.q[n + j]     = mm_.MMcharges_full[j];
+      pme_full.q[n + j]     = mm_.MMcharges_full[j] + dq(j);
    // printf("MM %5d %8.5f %8.5f %8.5f %8.5f\n", j+1, pme->x[n+j][XX], pme->x[n+j][YY], pme->x[n+j][ZZ], pme->q[n + j]);
   }
   
@@ -358,7 +452,7 @@ void QMMM_rec::calculate_LR_QM_MM(const t_commrec *cr,
        clear_rvec(sum_qx);
     // rvec subsum_qx;
 	   for (int j=0; j<ne; j++) {
-           svmul(mm_.MMcharges_full[j], mm_.xMM_full[j], qx);
+           svmul(mm_.MMcharges_full[j] + dq(j), mm_.xMM_full[j], qx);
            rvec_inc(sum_qx, qx);
         // if (j%3==0) {
         //   printf("MOL %4d DIPOLE %5.1f %5.1f %5.1f\n", j/3,
@@ -697,8 +791,8 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
       for (int j=0; j<n; j++) { // do it for every QM atom
         // add SR potential only from MM atoms in the neighbor list!
         for (int k=0; k<ne; k++) {
-          // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
-          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+          // charge scaled down (or zeroed) by the exclusions of the gradient
+          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactorGrad(j, k);
           if (qMM == 0.)
           {
               continue;
@@ -741,8 +835,8 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
       for (int j=0; j<n; j++) { // do it for every QM atom
         // add SR potential only from MM atoms in the neighbor list!
         for (int k=0; k<ne; k++) {
-          // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
-          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+          // charge scaled down (or zeroed) by the exclusions of the gradient
+          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactorGrad(j, k);
           if (qMM == 0.)
           {
               continue;
@@ -776,8 +870,8 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
       for (int j=0; j<n; j++) { // do it for every QM atom
         // add SR potential only from MM atoms in the neighbor list!
         for (int k=0; k<ne; k++) {
-          // charge scaled down (or zeroed) if this is a 1-2, 1-3 or 1-4 neighbor of QM atom j
-          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactor(j, k);
+          // charge scaled down (or zeroed) by the exclusions of the gradient
+          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactorGrad(j, k);
           if (qMM == 0.)
           {
               continue;
@@ -1061,7 +1155,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
               printf("QM/MM PME QM--MM short range exploding for QM=%d, MM=%d. MM charge is %f\n", j+1, k+1, mm_.MMcharges[k]);
               continue;
           }
-          const real s = mm_.qmmmScaleFactor(j, k);
+          const real s = mm_.qmmmScaleFactorGrad(j, k);
           if (r < rcoul)
           {
               real fscal = s * qm_.QMcharges[j] * mm_.MMcharges[k] / SQR(r) *

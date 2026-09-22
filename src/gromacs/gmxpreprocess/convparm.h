@@ -57,6 +57,7 @@ void convertInteractionsOfType(int                                      atnr,
                                int                                      comb,
                                double                                   reppow,
                                real                                     fudgeQQ,
-                               gmx_mtop_t*                              mtop);
+                               gmx_mtop_t*                              mtop,
+                               bool keepZeroAnglesDihedrals = false);
 
 #endif
