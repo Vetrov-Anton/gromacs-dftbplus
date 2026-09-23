@@ -184,6 +184,20 @@ to the energy.
 |---|---|
 | `MM1` (default) | as if the link atom were its MM1 atom: the pair with MM1 is removed, and the pairs with the other MM atoms follow the rule above counted from MM1 |
 | `QM1` | the same pairs and factors as its QM1 atom |
+| `exclude` | the link atoms take no part in the gradient at all: their charge is zero there, and its sum is spread evenly over the MM atoms of their own molecule, so that the charge of the system is unchanged |
+
+With `exclude` the link atoms are also absent from the gradient of the QM periodic images, and no
+pairs are excluded for them (there is nothing to exclude with zero charge), so the pair counters
+drop accordingly. The spread is recomputed in every step from the current Mulliken charges:
+
+```
+QM/MM gradient with GMX_QMMM_GRAD_LA=exclude: molecule of atoms 1-3743, the charge of its 10 link atoms
+  is removed from the gradient and spread over its 3634 MM atoms in every step.
+```
+
+The potential of section 1 is not affected by this, so the charges, the energy and the number of
+SCC iterations on a given geometry are the same as with `MM1`. The forces are then no longer the
+derivative of that energy, which is the price of this option.
 
 ### `GMX_QMMM_FUDGE_QQ`
 
@@ -199,7 +213,7 @@ for the MM1 charges removed from the potential in section 1.
 
 ```
 QM/MM gradient: GMX_QMMM_GRAD_EXCL = 3, 11 QM--MM pairs removed, 16 scaled with GMX_QMMM_FUDGE_QQ = 0.8333;
-  1 link atoms treated as their MM1 atom (GMX_QMMM_GRAD_LA).
+  1 link atoms, GMX_QMMM_GRAD_LA = MM1.
 ```
 
 The QM energy is the one returned by DFTB+, i.e. with the potential of section 1.
@@ -354,7 +368,7 @@ gradient is the sum of the two entries.
 | `GMX_QMMM_LJ_SCHEME` | grompp | `forcefield`, `exclude` | `forcefield` | `forcefield` |
 | `GMX_QMMM_POT_SCHEME` | mdrun | `none`, `RC`, `RCD`, `CS`, `AMBER` | `none` | `CS` |
 | `GMX_QMMM_GRAD_EXCL` | mdrun | `0`–`3`, `BONDED` | `3` | `3` |
-| `GMX_QMMM_GRAD_LA` | mdrun | `MM1`, `QM1` | `MM1` | `MM1` |
+| `GMX_QMMM_GRAD_LA` | mdrun | `MM1`, `QM1`, `exclude` | `MM1` | `MM1` |
 | `GMX_QMMM_FUDGE_QQ` | mdrun | float | force-field `fudgeQQ` | — |
 | `GMX_QMMM_REPORTS` | grompp, mdrun | `off`, `0`, `no`, `false` | on | — |
 | `GMX_QMMM_TOPOLOGY_REPORT` | grompp | file name | `qmmm_topology_report.txt` | — |

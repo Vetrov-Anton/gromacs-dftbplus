@@ -346,9 +346,53 @@ public:
     int  gradExcl    = 3;
     bool gradBonded  = false;
     real gradFudgeQQ = 1.0;
-    // Link atoms are excluded in the gradient as if they were their QM1 atom or,
-    //   by default, their MM1 atom (GMX_QMMM_GRAD_LA).
-    bool gradLaAsMM1 = true;
+    // Link atoms in the gradient (GMX_QMMM_GRAD_LA): they are excluded as if they were
+    //   their QM1 atom or, by default, their MM1 atom; or they are taken out of the QM/MM
+    //   electrostatic gradient altogether (exclude), their charge being spread evenly over
+    //   the MM atoms of their own molecule so that the total charge is preserved.
+    enum class GradLa
+    {
+        QM1,    // the exclusions of the QM1 atom
+        MM1,    // the exclusions counted from the MM1 atom (default)
+        Exclude // zero charge in the gradient, spread over the MM atoms of the molecule
+    };
+    GradLa gradLa = GradLa::MM1;
+    //! Whether the link atoms are excluded as their MM1 atom
+    bool gradLaAsMM1() const { return gradLa == GradLa::MM1; }
+    //! Whether the link atoms carry no charge in the QM/MM gradient
+    bool gradLaExcluded() const { return gradLa == GradLa::Exclude; }
+
+    // GradLa::Exclude. The molecules that contain link atoms: for each of them the link
+    //   atoms (as indices of the QM list) and the MM atoms of the same molecule that
+    //   receive their charge (global atom indices). Built once at initialization.
+    struct GradLaMolecule
+    {
+        std::vector<int> linkAtomsOfQmList;
+        std::vector<int> receivers;
+    };
+    std::vector<GradLaMolecule> gradLaMolecules;
+    // Global atom -> its molecule in gradLaMolecules, or -1. Empty unless GradLa::Exclude.
+    std::vector<int> gradLaMolOfAtom;
+    // Charges of the QM/MM gradient, rebuilt in every step by update_gradient_charges()
+    //   when the link atoms are excluded: the Mulliken charges with the link atoms zeroed,
+    //   and the MM charges of the short-range and of the full list with the charge of the
+    //   link atoms added evenly (incl. mm[0].scalefactor). Empty otherwise, and the plain
+    //   charges are used then.
+    std::vector<real> gradChargesQM;
+    std::vector<real> gradChargesMM;
+    std::vector<real> gradChargesMMfull;
+    //! Charge of QM atom \p j in the QM/MM gradient and in the QM periodic images
+    real gradChargeQM(int j) const { return gradChargesQM.empty() ? qm[0].QMcharges[j] : gradChargesQM[j]; }
+    //! Charge of MM atom \p k of the short-range list in the QM/MM gradient
+    real gradChargeMM(int k) const { return gradChargesMM.empty() ? mm[0].MMcharges[k] : gradChargesMM[k]; }
+    //! Charge of MM atom \p k of the full list in the QM/MM gradient
+    real gradChargeMMfull(int k) const
+    {
+        return gradChargesMMfull.empty() ? mm[0].MMcharges_full[k] : gradChargesMMfull[k];
+    }
+    // Rebuild the charges above from the current Mulliken charges and MM list.
+    //   Called at the beginning of gradient_QM_MM(); does nothing unless GradLa::Exclude.
+    void update_gradient_charges(int variant);
 
     // Add the fictitious point charges of the boundary scheme to the potential
     //   on the QM atoms (in e/nm, before the conversion to atomic units).

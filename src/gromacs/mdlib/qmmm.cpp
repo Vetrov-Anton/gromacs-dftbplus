@@ -806,6 +806,17 @@ const char* potSchemeName(QMMM_rec::PotScheme scheme)
     }
 }
 
+//! Name of the link-atom treatment in the gradient, as set with GMX_QMMM_GRAD_LA
+const char* gradLaName(QMMM_rec::GradLa la)
+{
+    switch (la)
+    {
+        case QMMM_rec::GradLa::QM1: return "QM1";
+        case QMMM_rec::GradLa::Exclude: return "exclude";
+        default: return "MM1";
+    }
+}
+
 //! Everything the exclusion report needs, besides the settings in QMMM_rec
 struct QmmmReportData
 {
@@ -876,7 +887,7 @@ void writeQmmmExclusionReport(const gmx_mtop_t* mtop, const QMMM_rec& qr, const 
     fprintf(fp, "; potential passed to DFTB+: GMX_QMMM_POT_SCHEME = %s\n", potSchemeName(qr.potScheme));
     fprintf(fp, "; QM/MM gradient: GMX_QMMM_GRAD_EXCL = %s, GMX_QMMM_FUDGE_QQ = %g, GMX_QMMM_GRAD_LA = %s\n",
             qr.gradBonded ? "BONDED" : gmx::formatString("%d", qr.gradExcl).c_str(), qr.gradFudgeQQ,
-            qr.gradLaAsMM1 ? "MM1" : "QM1");
+            gradLaName(qr.gradLa));
     fprintf(fp, "; the potential and the gradient are independent: a pair listed for one of them\n");
     fprintf(fp, ";   has the full charge in the other one unless listed there as well\n\n");
 
@@ -969,8 +980,11 @@ void writeQmmmExclusionReport(const gmx_mtop_t* mtop, const QMMM_rec& qr, const 
                      "have factor 1",
                      false);
     writeGradSection("gradient_link_atoms",
-                     qr.gradLaAsMM1 ? "link atoms, excluded as if they were their MM1 atom"
-                                    : "link atoms, excluded as if they were their QM1 atom",
+                     qr.gradLaExcluded()
+                             ? "link atoms: no charge in the gradient, spread over their molecule"
+                             : (qr.gradLaAsMM1()
+                                        ? "link atoms, excluded as if they were their MM1 atom"
+                                        : "link atoms, excluded as if they were their QM1 atom"),
                      true);
 
     // What the force field keeps at the boundary, as stored in the tpr. The terms that
@@ -1155,20 +1169,24 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
         gradFudgeQQ = static_cast<real>(f);
     }
 
-    gradLaAsMM1 = true;
+    gradLa = GradLa::MM1;
     if ((env = getenv("GMX_QMMM_GRAD_LA")) != nullptr)
     {
         if (gmx_strcasecmp(env, "MM1") == 0)
         {
-            gradLaAsMM1 = true;
+            gradLa = GradLa::MM1;
         }
         else if (gmx_strcasecmp(env, "QM1") == 0)
         {
-            gradLaAsMM1 = false;
+            gradLa = GradLa::QM1;
+        }
+        else if (gmx_strcasecmp(env, "exclude") == 0)
+        {
+            gradLa = GradLa::Exclude;
         }
         else
         {
-            gmx_fatal(FARGS, "GMX_QMMM_GRAD_LA must be QM1 or MM1, but it is '%s'.", env);
+            gmx_fatal(FARGS, "GMX_QMMM_GRAD_LA must be QM1, MM1 or exclude, but it is '%s'.", env);
         }
     }
 
@@ -1632,7 +1650,13 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
     for (const QmmmLinkAtom& l : linkAtoms)
     {
         const int j = qmOfAtom[l.la];
-        if (gradLaAsMM1)
+        if (gradLa == GradLa::Exclude)
+        {
+            // The link atom carries no charge in the gradient at all, so there is
+            //   nothing to exclude pair by pair; its charge is spread below.
+            continue;
+        }
+        if (gradLa == GradLa::MM1)
         {
             if (gradBonded)
             {
@@ -1649,6 +1673,60 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
             {
                 addGrad(j, entry.first, entry.second.first, "LA as QM1: " + entry.second.second);
             }
+        }
+    }
+
+    // GMX_QMMM_GRAD_LA=exclude: the link atoms take no part in the QM/MM electrostatic
+    //   gradient and in the gradient of the QM periodic images. Their (Mulliken) charge is
+    //   not simply dropped, which would change the charge that the MM subsystem sees, but
+    //   spread evenly over the MM atoms of their own molecule, in every step.
+    gradLaMolecules.clear();
+    gradLaMolOfAtom.clear();
+    if (gradLa == GradLa::Exclude)
+    {
+        std::vector<int> molStart(natoms), molSize(natoms);
+        int              start = 0;
+        for (const gmx_molblock_t& molb : mtop->molblock)
+        {
+            const int nat = mtop->moltype[molb.type].atoms.nr;
+            for (int mol = 0; mol < molb.nmol; mol++, start += nat)
+            {
+                std::fill(molStart.begin() + start, molStart.begin() + start + nat, start);
+                std::fill(molSize.begin() + start, molSize.begin() + start + nat, nat);
+            }
+        }
+        std::map<int, std::vector<int>> laOfMolecule; // first atom of the molecule -> link atoms
+        for (const QmmmLinkAtom& l : linkAtoms)
+        {
+            laOfMolecule[molStart[l.la]].push_back(qmOfAtom[l.la]);
+        }
+        gradLaMolOfAtom.assign(natoms, -1);
+        for (const auto& mol : laOfMolecule)
+        {
+            GradLaMolecule entry;
+            entry.linkAtomsOfQmList = mol.second;
+            for (int a = mol.first; a < mol.first + molSize[mol.first]; a++)
+            {
+                if (!bQM[a])
+                {
+                    entry.receivers.push_back(a);
+                    gradLaMolOfAtom[a] = static_cast<int>(gradLaMolecules.size());
+                }
+            }
+            if (entry.receivers.empty())
+            {
+                gmx_fatal(FARGS,
+                          "GMX_QMMM_GRAD_LA=exclude: the molecule of atoms %d-%d has %zu link atoms "
+                          "but no MM atom to spread their charge to.",
+                          mol.first + 1, mol.first + molSize[mol.first], mol.second.size());
+            }
+            fprintf(stdout,
+                    "QM/MM gradient with GMX_QMMM_GRAD_LA=exclude: molecule of atoms %d-%d, the charge "
+                    "of its %zu link atoms\n  is removed from the gradient and spread over its %zu MM "
+                    "atoms in every step.\n",
+                    mol.first + 1, mol.first + molSize[mol.first], entry.linkAtomsOfQmList.size(),
+                    entry.receivers.size());
+            gradLaMolecules.push_back(std::move(entry));
         }
     }
 
@@ -1671,9 +1749,9 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
     }
     fprintf(stdout,
             "QM/MM gradient: GMX_QMMM_GRAD_EXCL = %s, %d QM--MM pairs removed, %d scaled with "
-            "GMX_QMMM_FUDGE_QQ = %g;\n  %zu link atoms treated as their %s atom (GMX_QMMM_GRAD_LA).\n",
+            "GMX_QMMM_FUDGE_QQ = %g;\n  %zu link atoms, GMX_QMMM_GRAD_LA = %s.\n",
             gradBonded ? "BONDED" : gmx::formatString("%d", gradExcl).c_str(), nExcluded, nScaled,
-            gradFudgeQQ, linkAtoms.size(), gradLaAsMM1 ? "MM1" : "QM1");
+            gradFudgeQQ, linkAtoms.size(), gradLaName(gradLa));
 
     // Detailed report, atom by atom, in a separate file.
     if ((cr == nullptr || MASTER(cr)) && qmmmReportsEnabled())
@@ -1696,6 +1774,52 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
 //   short-range MM list, together with the AMBER charges of the potential. Has to be
 //   redone whenever that list changes, i.e. in every step.
 //   Dense factor arrays are used, so that the inner loops over the MM atoms need no search.
+// GMX_QMMM_GRAD_LA=exclude: rebuild the charges that the QM/MM gradient and the gradient
+//   of the QM periodic images use. The link atoms get zero, and their charge is added
+//   evenly to the MM atoms of their molecule, so that the charge of the whole system is
+//   unchanged. Nothing is done with the other settings of GMX_QMMM_GRAD_LA, and the
+//   external potential passed to DFTB+ is never affected.
+void QMMM_rec::update_gradient_charges(int variant)
+{
+    if (gradLa != GradLa::Exclude)
+    {
+        return;
+    }
+    QMMM_QMrec& qm_ = qm[0];
+    QMMM_MMrec& mm_ = mm[0];
+
+    gradChargesQM.assign(qm_.QMcharges, qm_.QMcharges + qm_.nrQMatoms);
+    // the shift of every molecule with link atoms, from the current Mulliken charges
+    std::vector<real> shiftOfMolecule(gradLaMolecules.size(), real(0.0));
+    for (size_t m = 0; m < gradLaMolecules.size(); m++)
+    {
+        double sum = 0.;
+        for (int j : gradLaMolecules[m].linkAtomsOfQmList)
+        {
+            sum += qm_.QMcharges[j];
+            gradChargesQM[j] = real(0.0);
+        }
+        shiftOfMolecule[m] =
+                static_cast<real>(sum / gradLaMolecules[m].receivers.size()) * mm_.scalefactor;
+    }
+
+    gradChargesMM.resize(mm_.nrMMatoms);
+    for (int k = 0; k < mm_.nrMMatoms; k++)
+    {
+        const int m     = gradLaMolOfAtom[mm_.indexMM[k]];
+        gradChargesMM[k] = mm_.MMcharges[k] + (m < 0 ? real(0.0) : shiftOfMolecule[m]);
+    }
+    if (variant == eqmmmPME)
+    {
+        gradChargesMMfull.resize(mm_.nrMMatoms_full);
+        for (int k = 0; k < mm_.nrMMatoms_full; k++)
+        {
+            const int m          = gradLaMolOfAtom[mm_.indexMM_full[k]];
+            gradChargesMMfull[k] = mm_.MMcharges_full[k] + (m < 0 ? real(0.0) : shiftOfMolecule[m]);
+        }
+    }
+}
+
 void QMMM_rec::update_QMMM_exclusion_scaling(int natoms)
 {
     QMMM_QMrec& qm_ = qm[0];

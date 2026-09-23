@@ -771,6 +771,16 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
   QMMM_MMrec& mm_ = mm[0];
 //t_QMMM_PME *pme_full   = qr->pme_full;
 //t_QMMM_PME *pme_qmonly = qr->pme_qmonly;
+  /* GMX_QMMM_GRAD_LA=exclude: this routine then works with the link atoms zeroed and
+   * their charge spread over the MM atoms of their molecule -- in the QM--MM gradient
+   * and in the gradient of the QM periodic images alike. With the other settings of
+   * GMX_QMMM_GRAD_LA these are the plain Mulliken and force-field charges, and nothing
+   * below changes. The external potential of the SCC calculation is never affected.
+   */
+  update_gradient_charges(variant);
+  const real* qQM     = gradChargesQM.empty() ? qm_.QMcharges : gradChargesQM.data();
+  const real* qMMsr   = gradChargesMM.empty() ? mm_.MMcharges.data() : gradChargesMM.data();
+  const real* qMMfull = gradChargesMMfull.empty() ? mm_.MMcharges_full.data() : gradChargesMMfull.data();
   real        rcoul = qm_.rcoulomb;
   real        ewaldcoeff_q = qm_.ewaldcoeff_q;
   int         n = qm_.nrQMatoms;
@@ -808,7 +818,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
         // add SR potential only from MM atoms in the neighbor list!
         for (int k=0; k<ne; k++) {
           // charge scaled down (or zeroed) by the exclusions of the gradient
-          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactorGrad(j, k);
+          const real qMM = qMMsr[k] * mm_.qmmmScaleFactorGrad(j, k);
           if (qMM == 0.)
           {
               continue;
@@ -823,7 +833,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           }
           if (r < r_1)
           {
-              real fscal = - qm_.QMcharges[j] * qMM / CUB(r) * SQR(BOHR2NM);
+              real fscal = - qQM[j] * qMM / CUB(r) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
               //printf("SR: QM %1d -- MM %1d:%12.7f%12.7f%12.7f\n", j+1, k+1, dgr[XX], dgr[YY], dgr[ZZ]);
               rvec_inc(partgrad[j], dgr);
@@ -832,7 +842,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           }
           if (r < r_c)
           {
-              real fscal = - qm_.QMcharges[j] * qMM / r * (1. / SQR(r)
+              real fscal = - qQM[j] * qMM / r * (1. / SQR(r)
                            - big_a * SQR(r - r_1) - big_b * CUB(r - r_1)) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
               rvec_inc(partgrad[j], dgr);
@@ -852,7 +862,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
         // add SR potential only from MM atoms in the neighbor list!
         for (int k=0; k<ne; k++) {
           // charge scaled down (or zeroed) by the exclusions of the gradient
-          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactorGrad(j, k);
+          const real qMM = qMMsr[k] * mm_.qmmmScaleFactorGrad(j, k);
           if (qMM == 0.)
           {
               continue;
@@ -867,7 +877,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           }
           if (r < r_c)
           {
-              real fscal = - qm_.QMcharges[j] * qMM / r * (1. / SQR(r) - r / CUB(r_c)) * SQR(BOHR2NM);
+              real fscal = - qQM[j] * qMM / r * (1. / SQR(r) - r / CUB(r_c)) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
               rvec_inc(partgrad[j], dgr);
               rvec_dec(MMgrad[k], dgr);
@@ -887,7 +897,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
         // add SR potential only from MM atoms in the neighbor list!
         for (int k=0; k<ne; k++) {
           // charge scaled down (or zeroed) by the exclusions of the gradient
-          const real qMM = mm_.MMcharges[k] * mm_.qmmmScaleFactorGrad(j, k);
+          const real qMM = qMMsr[k] * mm_.qmmmScaleFactorGrad(j, k);
           if (qMM == 0.)
           {
               continue;
@@ -902,7 +912,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           }
           if (r < r_c)
           {
-              real fscal = - qm_.QMcharges[j] * qMM / r * (1. / SQR(r) + 2. * r / CUB(r_c) - big_c) * SQR(BOHR2NM);
+              real fscal = - qQM[j] * qMM / r * (1. / SQR(r) + 2. * r / CUB(r_c) - big_c) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
               rvec_inc(partgrad[j], dgr);
               rvec_dec(MMgrad[k], dgr);
@@ -932,7 +942,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
            * ATTENTION -- the interaction of periodic QM images will be included FULLY,
            * and thus it has to be reduced below, to account for the possibly requested scalefactor.
            */
-          pme_full.q[j]     = qm_.QMcharges[j];
+          pme_full.q[j]     = qQM[j];
       }
       for (int j=0; j<ne_full; j++)
       { 
@@ -940,7 +950,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           pme_full.x[n + j][YY] = mm_.xMM_full[j][YY];
           pme_full.x[n + j][ZZ] = mm_.xMM_full[j][ZZ];
           /* the MM charges are already scaled */
-          pme_full.q[n + j]     = mm_.MMcharges_full[j];
+          pme_full.q[n + j]     = qMMfull[j];
       }
       // PME -- long-range component
     //static struct timespec time1, time2;
@@ -982,7 +992,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           real r = norm(bond);
           rvec dgr;
           // negative of gradient -- we want to subtract it from partgrad
-          real fscal = qm_.QMcharges[j] * qm_.QMcharges[k] / SQR(r) *
+          real fscal = qQM[j] * qQM[k] / SQR(r) *
                         (gmx_erf(ewaldcoeff_q * r) / r
                        - M_2_SQRTPI * ewaldcoeff_q * exp(-SQR(ewaldcoeff_q * r))) * SQR(BOHR2NM);
           svmul(fscal, bond, dgr); // vec(dgr) = fscal * vec(bond)
@@ -1012,7 +1022,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           pme_qmonly.x[j][YY] = qm_.xQM[j][YY];
           pme_qmonly.x[j][ZZ] = qm_.xQM[j][ZZ];
           /* unscaled QM charges; the resulting gradients will be scaled down at the end of the calculation! */
-          pme_qmonly.q[j]     = qm_.QMcharges[j];
+          pme_qmonly.q[j]     = qQM[j];
       }
       // PME -- long-range component
     //clock_gettime(CLOCK_MONOTONIC, &time1);
@@ -1050,7 +1060,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           real r = norm(bond);
           rvec dgr;
           // negative of gradient -- we want to subtract it from partgrad
-          real fscal = qm_.QMcharges[j] * qm_.QMcharges[k] / SQR(r) *
+          real fscal = qQM[j] * qQM[k] / SQR(r) *
                         (gmx_erf(ewaldcoeff_q * r) / r
                        - M_2_SQRTPI * ewaldcoeff_q * exp(-SQR(ewaldcoeff_q * r))) * SQR(BOHR2NM);
           svmul(fscal, bond, dgr); // vec(dgr) = fscal * vec(bond)
@@ -1082,7 +1092,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           pme_full.x[j][XX] = qm_.xQM[j][XX];
           pme_full.x[j][YY] = qm_.xQM[j][YY];
           pme_full.x[j][ZZ] = qm_.xQM[j][ZZ];
-          pme_full.q[j]     = qm_.QMcharges[j];
+          pme_full.q[j]     = qQM[j];
       }
       for (int k=0; k<ne_full; k++)
       {
@@ -1102,9 +1112,9 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
     //print_time_difference("PMETIME 5 ", time1, time2);
       for (int j=0; j<ne_full; j++)
       {
-          MMgrad_full[j][XX] = - mm_.MMcharges_full[j] * pme_full.f[n + j][XX] / HARTREE_BOHR2MD;
-          MMgrad_full[j][YY] = - mm_.MMcharges_full[j] * pme_full.f[n + j][YY] / HARTREE_BOHR2MD;
-          MMgrad_full[j][ZZ] = - mm_.MMcharges_full[j] * pme_full.f[n + j][ZZ] / HARTREE_BOHR2MD;
+          MMgrad_full[j][XX] = - qMMfull[j] * pme_full.f[n + j][XX] / HARTREE_BOHR2MD;
+          MMgrad_full[j][YY] = - qMMfull[j] * pme_full.f[n + j][YY] / HARTREE_BOHR2MD;
+          MMgrad_full[j][ZZ] = - qMMfull[j] * pme_full.f[n + j][ZZ] / HARTREE_BOHR2MD;
       } // svmul(- mm_.MMcharges_full[j] / HARTREE_BOHR2MD, pme->f[n + j], mm_.grad_full[j]);
    // printf("================================\n");
    // for (int i=0; i<ne_full; i++)
@@ -1174,7 +1184,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           const real s = mm_.qmmmScaleFactorGrad(j, k);
           if (r < rcoul)
           {
-              real fscal = s * qm_.QMcharges[j] * mm_.MMcharges[k] / SQR(r) *
+              real fscal = s * qQM[j] * qMMsr[k] / SQR(r) *
                            (- gmx_erfc(ewaldcoeff_q * r) / r
                             - M_2_SQRTPI * ewaldcoeff_q * exp(-SQR(ewaldcoeff_q * r))) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
@@ -1189,7 +1199,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
                * Not restricted to r < rcoul, because the reciprocal-space contribution
                * is not either.
                */
-              real fscal = (1. - s) * qm_.QMcharges[j] * mm_.MMcharges[k] / SQR(r) *
+              real fscal = (1. - s) * qQM[j] * qMMsr[k] / SQR(r) *
                            (gmx_erf(ewaldcoeff_q * r) / r
                             - M_2_SQRTPI * ewaldcoeff_q * exp(-SQR(ewaldcoeff_q * r))) * SQR(BOHR2NM);
               svmul(fscal, bond, dgr);
