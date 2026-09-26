@@ -1,5 +1,9 @@
 # GROMACS + DFTB+ — QM/MM with separate boundary rules for the QM Hamiltonian and the gradient
 
+> **Branch `develop`.** Everything of `main` plus `GMX_QMMM_ENERGY_CORRECTION`, section 3:
+> the reported energy is rebuilt with the rules of the gradient. Switch it off to reproduce
+> the energy of `main` bit for bit.
+
 A GROMACS 2021.7 build with the DFTB+ QM/MM interface (DFTB+ coupling by Kubař *et al.*),
 PLUMED and a configurable treatment of the QM/MM boundary:
 
@@ -9,11 +13,14 @@ PLUMED and a configurable treatment of the QM/MM boundary:
 2. **Exclusions of the QM–MM gradient** — QM–MM pairs removed up to 1-3 and scaled at 1-4,
    counted along the bond graph or taken from the bonded terms of the topology, with a
    separate rule for the link atoms.
-3. **Boundary treatment in grompp** — which bonded terms at the boundary are removed, and the
+3. **Energy under the rules of the gradient** — the QM–MM electrostatics of the reported
+   energy is rebuilt with the rules of the gradient, so that the number and the forces belong
+   to the same model.
+4. **Boundary treatment in grompp** — which bonded terms at the boundary are removed, and the
    QM–MM Lennard-Jones by the exclusion rules of the force field. Restraints are always kept.
-4. **Reports** — `grompp` and `mdrun` write, atom by atom, every term removed from the
+5. **Reports** — `grompp` and `mdrun` write, atom by atom, every term removed from the
    topology and every QM–MM pair removed or scaled in the electrostatics.
-5. **Diagnostic output** — the potential on the QM atoms and the QM/MM gradients, split into
+6. **Diagnostic output** — the potential on the QM atoms and the QM/MM gradients, split into
    their contributions, for checking against an independent calculation.
 
 Everything is set by environment variables; there is no `.mdp` option and no `tpr` format
@@ -35,12 +42,12 @@ The recipe clones this repository during the build, so the `.def` file is the on
 need locally:
 
 ```bash
-wget https://raw.githubusercontent.com/Vetrov-Anton/gromacs-dftbplus/main/Install_gmx_dftb_plumed_torch.def
+wget https://raw.githubusercontent.com/Vetrov-Anton/gromacs-dftbplus/develop/Install_gmx_dftb_plumed_torch.def
 apptainer build --fakeroot gmx_dftbplus.sif Install_gmx_dftb_plumed_torch.def
 ```
 
 Versions, the branch to build and the number of build jobs are set in one block at the top
-of `%post`.
+of `%post`; on this branch it is set to `develop`.
 
 The image presets the QM/MM settings below in `%environment`. Each can be overridden per run
 with `--env VAR=value`:
@@ -173,7 +180,7 @@ With `BONDED` the pairs come from the bonds, angles and proper dihedrals that re
 | dihedral QM1–MM1–MM2–MM3 | QM1, MM3 | `GMX_QMMM_FUDGE_QQ` |
 
 Improper dihedrals are not used. A pair found both removed and scaled is removed. The terms
-removed by `GMX_QMMM_BONDED_SCHEME=classic` (section 3) are absent from the `tpr`, so their
+removed by `GMX_QMMM_BONDED_SCHEME=classic` (section 4) are absent from the `tpr`, so their
 pairs keep the full interaction. With QM/MM, grompp keeps the angles and proper dihedrals whose
 parameters are all zero, so that every bonded quadruple is present; they contribute nothing
 to the energy.
@@ -195,9 +202,10 @@ QM/MM gradient with GMX_QMMM_GRAD_LA=exclude: molecule of atoms 1-3743, the char
   is removed from the gradient and spread over its 3634 MM atoms in every step.
 ```
 
-The potential of section 1 is not affected by this, so the charges, the energy and the number of
-SCC iterations on a given geometry are the same as with `MM1`. The forces are then no longer the
-derivative of that energy, which is the price of this option.
+The potential of section 1 is not affected by this, so the charges and the number of SCC
+iterations on a given geometry are the same as with `MM1`. The forces are then no longer the
+derivative of the energy of the Hamiltonian, which is the price of this option; section 3 brings
+the reported energy to the same rules, but the forces stay what they are.
 
 ### `GMX_QMMM_FUDGE_QQ`
 
@@ -216,11 +224,53 @@ QM/MM gradient: GMX_QMMM_GRAD_EXCL = 3, 11 QM--MM pairs removed, 16 scaled with 
   1 link atoms, GMX_QMMM_GRAD_LA = MM1.
 ```
 
-The QM energy is the one returned by DFTB+, i.e. with the potential of section 1.
+The energy that belongs to this gradient is the subject of section 3.
 
 ---
 
-## 3. Topology at the boundary (grompp)
+## 3. Energy under the rules of the gradient: `GMX_QMMM_ENERGY_CORRECTION` (mdrun)
+
+DFTB+ returns an energy whose QM–MM electrostatics is the one of the QM Hamiltonian, i.e. of the
+potential of section 1, while the forces are built with the rules of section 2. As soon as the two
+sets of rules differ, the reported energy and the reported forces belong to different models. The
+correction replaces the first contribution by the second:
+
+```
+E = E(DFTB+) − Σ_A q_A φ_pot(A) + Σ_A q_A φ_grad(A)
+```
+
+The charges, the exclusions, the 1-4 factor and the link-atom treatment of the added term are
+exactly those of the gradient, the redistribution of `GMX_QMMM_GRAD_LA=exclude` included. With
+`GMX_QMMM_VARIANT=1` the contribution of the periodic images of the QM charges is rebuilt as well;
+this costs two extra PME calls per step and is done only when the two charge sets differ.
+
+| value | QM–MM electrostatics of the reported energy |
+|---|---|
+| `on` (default) | the rules of the gradient, section 2 |
+| `off` | the rules of the QM Hamiltonian, section 1 |
+
+The correction is identically zero when the two sets of rules coincide, and with `off` the energy
+is the one the code produced before this option existed. The step costs 6–8 % more with the
+correction switched on.
+
+```
+QM/MM energy: the QM--MM electrostatics of the reported energy follows the rules of the gradient
+  (GMX_QMMM_ENERGY_CORRECTION = on).
+```
+
+**What it does not do.** The correction changes the energy and never the forces. With different
+rules for the potential and for the gradient the forces are not the derivative of any function:
+what is missing from them is the charge response `Σ_A (φ_grad − φ_pot)(A) · dq_A/dR`, and no
+function of the coordinates added to the energy can produce it. The correction therefore makes the
+energy consistent with the force model and comparable between schemes, but it does not restore the
+conservation of energy in NVE — measured on a solvated tripeptide over 200 ps at 0.5 fs, the drift
+goes from 440 to 408 kJ/(mol·ns) for `CS` with `GRAD_EXCL=3` and `GRAD_LA=MM1`, both figures far
+above the 57 of matched rules. Where conservation matters, match the rules: `POT_SCHEME=none`
+with `GRAD_EXCL=0`.
+
+---
+
+## 4. Topology at the boundary (grompp)
 
 ### `GMX_QMMM_BONDED_SCHEME`
 
@@ -265,7 +315,7 @@ atoms are always removed.
 
 ---
 
-## 4. Reports
+## 5. Reports
 
 | file | written by | content |
 |---|---|---|
@@ -278,7 +328,7 @@ file names can be changed with `GMX_QMMM_TOPOLOGY_REPORT` and `GMX_QMMM_EXCLUSIO
 
 ---
 
-## 5. QM/MM electrostatics variant
+## 6. QM/MM electrostatics variant
 
 | variable | meaning |
 |---|---|
@@ -289,11 +339,11 @@ file names can be changed with `GMX_QMMM_TOPOLOGY_REPORT` and `GMX_QMMM_EXCLUSIO
 | `GMX_QMMM_VARIANT=4` | shifted cut-off |
 | `GMX_QMMM_PME_DIPCOR` | dipole (surface) correction for PME — disabled: with `GMX_QMMM_VARIANT=1` mdrun prints why and exits; with any other variant it is ignored |
 
-All boundary schemes of sections 1 and 2 work with every variant.
+All boundary schemes of sections 1–3 work with every variant.
 
 ---
 
-## 6. DFTB output files (mdrun)
+## 7. DFTB output files (mdrun)
 
 Each of the following is set to an **integer stride in steps**; the file is opened in append
 mode in the run directory on step 0 and written every *N* steps. Unset means no file. The
@@ -309,6 +359,7 @@ variables that describe the MM environment are ignored when `GMX_QMMM_VARIANT=0`
 | `GMX_DFTB_MM_COORD_FULL=N` | `qm_dftb_mm_full.qxyz` | coordinates and charges of **all** MM atoms |
 | `GMX_DFTB_QMMM_GRAD=N` | `qm_dftb_grad.xvg` | gradients on the QM atoms and on the short-range MM atoms |
 | `GMX_DFTB_QMMM_GRAD_FULL=N` | `qm_dftb_grad_full.xvg` | gradients on **all** MM atoms (PME only) |
+| `GMX_DFTB_ENERGY_CORR=N` | `qm_dftb_energy_corr.xvg` | the correction of section 3 and the corrected QM energy, kJ/mol |
 
 `GMX_DFTB_MM_COORD_FULL` and `GMX_DFTB_QMMM_GRAD_FULL` on a solvated system write the whole
 box every *N* steps — pick a large stride.
@@ -370,6 +421,7 @@ gradient is the sum of the two entries.
 | `GMX_QMMM_GRAD_EXCL` | mdrun | `0`–`3`, `BONDED` | `3` | `3` |
 | `GMX_QMMM_GRAD_LA` | mdrun | `MM1`, `QM1`, `exclude` | `MM1` | `MM1` |
 | `GMX_QMMM_FUDGE_QQ` | mdrun | float | force-field `fudgeQQ` | — |
+| `GMX_QMMM_ENERGY_CORRECTION` | mdrun | `on`, `off` | `on` | — |
 | `GMX_QMMM_REPORTS` | grompp, mdrun | `off`, `0`, `no`, `false` | on | — |
 | `GMX_QMMM_TOPOLOGY_REPORT` | grompp | file name | `qmmm_topology_report.txt` | — |
 | `GMX_QMMM_EXCLUSION_REPORT` | mdrun | file name | `qmmm_exclusion_report.txt` | — |
@@ -382,9 +434,11 @@ gradient is the sum of the two entries.
 | `GMX_DFTB_MM_COORD_FULL` | mdrun | stride in steps | off | — |
 | `GMX_DFTB_QMMM_GRAD` | mdrun | stride in steps | off | — |
 | `GMX_DFTB_QMMM_GRAD_FULL` | mdrun | stride in steps | off | — |
+| `GMX_DFTB_ENERGY_CORR` | mdrun | stride in steps | off | — |
 
 An unknown value of `GMX_QMMM_BONDED_SCHEME`, `GMX_QMMM_LJ_SCHEME`, `GMX_QMMM_POT_SCHEME`,
-`GMX_QMMM_GRAD_EXCL`, `GMX_QMMM_GRAD_LA` or `GMX_QMMM_FUDGE_QQ` is a fatal error.
+`GMX_QMMM_GRAD_EXCL`, `GMX_QMMM_GRAD_LA`, `GMX_QMMM_FUDGE_QQ` or `GMX_QMMM_ENERGY_CORRECTION`
+is a fatal error.
 
 ---
 

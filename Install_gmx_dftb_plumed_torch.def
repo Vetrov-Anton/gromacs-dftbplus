@@ -25,7 +25,7 @@ From: ubuntu:24.04
     SRC=/opt/src                   # not /tmp: the host /tmp is bind-mounted
                                    # into the container during the build
     GROMACS_REPO=https://github.com/Vetrov-Anton/gromacs-dftbplus.git
-    GROMACS_BRANCH=main
+    GROMACS_BRANCH=develop
     DFTBPLUS_VERSION=25.1          # any release with the modern C API (>= 23.1)
     PLUMED_VERSION=2.9.5           # last PLUMED line shipping the official
                                    # patches/gromacs-2021.7; 2.10 starts at
