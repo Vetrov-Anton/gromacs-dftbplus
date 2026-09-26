@@ -405,21 +405,43 @@ public:
     std::vector<real> energyPotWork;
     std::vector<real> energyPotWorkLr;
     // The correction itself, in hartree; zero when switched off or when the rules coincide.
-    double energy_correction(const t_commrec*  cr,
-                             t_nrnb*           nrnb,
-                             gmx_wallcycle_t   wcycle,
-                             struct gmx_pme_t* pmedata,
-                             int               variant);
+    //   With dVout != nullptr the difference of the two potentials on the QM atoms,
+    //   phi(gradient) - phi(potential) in hartree, is stored there; the finite-difference
+    //   response correction of the forces needs it. It is only filled when the two charge
+    //   sets coincide, i.e. unless GMX_QMMM_GRAD_LA=exclude, and left empty otherwise.
+    double energy_correction(const t_commrec*     cr,
+                             t_nrnb*              nrnb,
+                             gmx_wallcycle_t      wcycle,
+                             struct gmx_pme_t*    pmedata,
+                             int                  variant,
+                             std::vector<double>* dVout = nullptr);
+
+    // Linear-response correction of the forces (GMX_QMMM_RESPONSE), see call_dftbplus().
+    //   The Mulliken charges are stationary in the potential of the QM Hamiltonian, while the
+    //   energy above is built with the potential of the gradient, so the gradient of that
+    //   energy contains the response of the charges, dV * dq/dR, which no other term covers.
+    bool   responseCorrection = true;
+    double responseEps        = 1e-3;
 
     // Add the fictitious point charges of the boundary scheme to the potential
     //   on the QM atoms (in e/nm, before the conversion to atomic units).
     void add_boundary_scheme_potential(int variant, real* pot);
+
+    // The electrostatic gradient of those same fictitious charges, in hartree/bohr: on the QM
+    //   atoms (partgrad) and, by the chain rule, on the MM1 and MM2 atoms that define where
+    //   each point sits (MMgrad, indices of the short-range list). Only used by the gradient
+    //   with the rules of the potential.
+    void add_boundary_scheme_gradient(int variant, const real* qQM, rvec* partgrad, rvec* MMgrad);
 
     // AMBER: the MM charges of the potential on the current short-range list (topology charge
     //   plus shift, incl. scalefactor), rebuilt with the list; and the shifts on the full MM
     //   list (index of xMM_full, incl. scalefactor), built on first use. Empty otherwise.
     std::vector<real> potChargesSR;
     std::vector<real> potShiftFull;
+    // Scratch: the charges of all of the MM atoms under the rules of the potential, i.e.
+    //   MMcharges_full plus potShiftFull; only filled with GMX_QMMM_POT_SCHEME=AMBER, and
+    //   only when the gradient is asked for with those rules.
+    std::vector<real> potFullWork;
     // Global atoms of the previous short-range list, to reset localIndexOfAtom cheaply.
     std::vector<int> previousIndexMM;
 
@@ -500,6 +522,11 @@ public:
                                   real*             pot,
                                   const real*       charges = nullptr);
     
+    // By default the gradient is built with the rules of GMX_QMMM_GRAD_*: the force-field
+    //   charges with the exclusions of the gradient. With potentialRules it is built with the
+    //   sources of the external potential instead (GMX_QMMM_POT_SCHEME): the charges that
+    //   polarize the QM density, the fictitious point charges of the boundary scheme included,
+    //   and the Mulliken charges as they stand. The response correction needs that variant.
     void gradient_QM_MM(const t_commrec*  cr,
                         t_nrnb*           nrnb,
                         gmx_wallcycle_t   wcycle,
@@ -507,7 +534,8 @@ public:
                         int               variant,
                         rvec*             partgrad,
                         rvec*             MMgrad,
-                        rvec*             MMgrad_full);
+                        rvec*             MMgrad_full,
+                        bool              potentialRules = false);
 
     real calculate_QMMM(const t_commrec*           cr,
                         gmx::ForceWithVirial*      forceWithVirial,

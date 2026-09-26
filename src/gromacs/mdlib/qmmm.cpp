@@ -192,6 +192,25 @@ void QMMM_rec::update_QMMM_coord(const t_commrec*  cr,
     // copy box size
     copy_mat(box, qm_.box);
 
+    /* The minimum image of the QM--MM distances is taken with the diagonal of the box only
+     * (pbc_dist_qmmm(), pbc_dx_qmmm() in qmmm-calculation.cpp), which is the nearest image
+     * for a rectangular box and not for a triclinic one. Rather than return wrong distances
+     * silently -- a truncated octahedron or a rhombic dodecahedron is a common choice --
+     * stop here.
+     */
+    {
+        const real offDiagonal = std::fabs(box[YY][XX]) + std::fabs(box[ZZ][XX]) + std::fabs(box[ZZ][YY]);
+        if (offDiagonal > 1e-6)
+        {
+            gmx_fatal(FARGS,
+                      "QM/MM with DFTB+: the box is triclinic (off-diagonal elements "
+                      "%g %g %g nm), but the QM--MM electrostatics of this interface takes the "
+                      "minimum image from the diagonal of the box alone and would use wrong "
+                      "distances. Use a rectangular box.",
+                      box[YY][XX], box[ZZ][XX], box[ZZ][YY]);
+        }
+    }
+
     // initialize PBC for MM coordinate manipulation
     t_pbc pbc;
     ivec null_ivec;
@@ -1213,6 +1232,60 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
         }
     }
 
+    /* The forces get the response of the Mulliken charges to the difference of the two
+     *   potentials (GMX_QMMM_RESPONSE=on|off, on by default). The charges are stationary in
+     *   the potential of the QM Hamiltonian, while the reported energy is built with the
+     *   potential of the gradient, so that energy has a term dV * dq/dR that no force term
+     *   covers. It is evaluated by central finite difference, with two extra DFTB+
+     *   calculations per step, and only when the two sets of rules actually differ.
+     */
+    responseCorrection = true;
+    if ((env = getenv("GMX_QMMM_RESPONSE")) != nullptr)
+    {
+        if (gmx_strcasecmp(env, "on") == 0 || gmx_strcasecmp(env, "yes") == 0
+            || gmx_strcasecmp(env, "true") == 0 || std::strcmp(env, "1") == 0)
+        {
+            responseCorrection = true;
+        }
+        else if (gmx_strcasecmp(env, "off") == 0 || gmx_strcasecmp(env, "no") == 0
+                 || gmx_strcasecmp(env, "false") == 0 || std::strcmp(env, "0") == 0)
+        {
+            responseCorrection = false;
+        }
+        else
+        {
+            gmx_fatal(FARGS, "GMX_QMMM_RESPONSE must be on or off, but it is '%s'.", env);
+        }
+    }
+    if ((env = getenv("GMX_QMMM_RESPONSE_EPS")) != nullptr)
+    {
+        char*        end = nullptr;
+        const double f   = std::strtod(env, &end);
+        if (end == env || *end != '\0' || !(f > 0.))
+        {
+            gmx_fatal(FARGS, "GMX_QMMM_RESPONSE_EPS must be a positive number, but it is '%s'.", env);
+        }
+        responseEps = f;
+    }
+    if (responseCorrection && !energyCorrection)
+    {
+        gmx_fatal(FARGS,
+                  "GMX_QMMM_RESPONSE is on while GMX_QMMM_ENERGY_CORRECTION is off. The two "
+                  "belong to one model: the response correction makes the forces the gradient "
+                  "of the energy that the energy correction reports. Switch both on or both off.");
+    }
+    if (responseCorrection && gradLa == GradLa::Exclude)
+    {
+        fprintf(stdout,
+                "\nNOTE: the response correction of the forces is not available with "
+                "GMX_QMMM_GRAD_LA=exclude and\n  has been switched off. The link-atom charge is "
+                "then spread over the MM atoms, so the QM--MM\n  interaction is not linear in "
+                "the Mulliken charges and the difference of the two potentials\n  is not the "
+                "perturbation that gives the response. The forces of this run are therefore not\n"
+                "  the gradient of the reported energy.\n\n");
+        responseCorrection = false;
+    }
+
     // ---- topology ----
     const int         natoms = mtop->natoms;
     std::vector<bool> bQM(natoms, false);
@@ -1491,10 +1564,22 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
                         potPoints.push_back({ l.mm1, b, real(1.0), -q0 });
                         break;
                     case PotScheme::CS:
+                    {
+                        /* Charge shift: q0 moves from MM1 onto MM2, which changes the dipole of
+                         * the MM1--MM2 bond by +q0*b (b = MM1->MM2). The compensating pair sits
+                         * at the fractions fMinus and fPlus of the bond and has the dipole
+                         * qPair*(fMinus - fPlus)*b, so qPair = q0 / (fPlus - fMinus) is what
+                         * cancels the shift. With the pair at +-0.06 of the bond length that is
+                         * q0/0.12, not q0 -- the latter would restore only 12% of the dipole.
+                         */
+                        constexpr real fMinus = 0.94;
+                        constexpr real fPlus  = 1.06;
+                        const real     qPair  = q0 / (fPlus - fMinus);
                         potPoints.push_back({ l.mm1, b, real(1.0), q0 });
-                        potPoints.push_back({ l.mm1, b, real(0.94), q0 });
-                        potPoints.push_back({ l.mm1, b, real(1.06), -q0 });
+                        potPoints.push_back({ l.mm1, b, fMinus, qPair });
+                        potPoints.push_back({ l.mm1, b, fPlus, -qPair });
                         break;
+                    }
                     default: break;
                 }
             }
@@ -1779,6 +1864,22 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
             "QM/MM energy: the QM--MM electrostatics of the reported energy follows the rules of the %s\n"
             "  (GMX_QMMM_ENERGY_CORRECTION = %s).\n",
             energyCorrection ? "gradient" : "QM Hamiltonian", energyCorrection ? "on" : "off");
+    if (responseCorrection)
+    {
+        fprintf(stdout,
+                "QM/MM forces: with the response of the Mulliken charges to the difference of the two\n"
+                "  potentials (GMX_QMMM_RESPONSE = on, GMX_QMMM_RESPONSE_EPS = %g), by central finite\n"
+                "  difference -- two extra DFTB+ calculations per step whenever the rules of the\n"
+                "  potential and of the gradient differ. Use a tight SCCTolerance, 1e-8 or below.\n",
+                responseEps);
+    }
+    else
+    {
+        fprintf(stdout,
+                "QM/MM forces: without the response of the Mulliken charges (GMX_QMMM_RESPONSE = off).\n"
+                "  Whenever the rules of the potential and of the gradient differ, the forces are not\n"
+                "  the gradient of the reported energy.\n");
+    }
 
     // Detailed report, atom by atom, in a separate file.
     if ((cr == nullptr || MASTER(cr)) && qmmmReportsEnabled())
@@ -1890,9 +1991,25 @@ void QMMM_rec::update_QMMM_exclusion_scaling(int natoms)
                 const int k = mm_.localIndexOfAtom[exc.first];
                 if (k < 0)
                 {
-                    // An MM atom within 3 bonds of a QM atom is normally well inside
-                    //   the cut-off. If it is not, the pair does not contribute to the
-                    //   QM/MM interaction in the first place and there is nothing to scale.
+                    /* An MM atom within a few bonds of a QM atom is normally well inside
+                     * the cut-off. With a cut-off variant, an atom that is not on the list
+                     * is farther than rcoulomb from every QM atom, so the pair contributes
+                     * nothing and there is nothing to scale. With PME that reasoning fails:
+                     * the reciprocal-space part on the grid still holds the full term of
+                     * the pair, and the counter-term that removes the fraction (1-s) of it
+                     * is only applied to the atoms of the short-range list. Silently
+                     * skipping the pair would leave it unscaled in the reciprocal space.
+                     */
+                    if (qm_.qmmm_variant == eqmmmPME)
+                    {
+                        gmx_fatal(FARGS,
+                                  "QM/MM: MM atom %d, which is excluded from or scaled in the "
+                                  "electrostatics of QM atom %d, is not on the QM/MM short-range "
+                                  "list, so its reciprocal-space term cannot be corrected. The "
+                                  "electrostatics cut-off (rcoulomb = %g nm) is too short for the "
+                                  "requested treatment.",
+                                  exc.first + 1, qm_.indexQM[j] + 1, qm_.rcoulomb);
+                    }
                     continue;
                 }
                 scale[static_cast<size_t>(j) * mm_.nrMMatoms + k] = exc.second;

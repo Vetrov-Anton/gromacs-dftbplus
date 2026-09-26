@@ -203,6 +203,11 @@ From: ubuntu:24.04
     #   and the link atoms treated as their MM1 atom there
     export GMX_QMMM_GRAD_EXCL=3
     export GMX_QMMM_GRAD_LA=MM1
+    # mdrun: the reported energy follows the rules of the gradient, and the forces get the
+    #   response of the Mulliken charges that its gradient needs -- two extra DFTB+ runs per
+    #   step with the settings above, so use SCCTolerance = 1e-8 or below in dftb_in.hsd
+    export GMX_QMMM_ENERGY_CORRECTION=on
+    export GMX_QMMM_RESPONSE=on
 
 %runscript
     exec gmx "$@"
@@ -278,6 +283,14 @@ From: ubuntu:24.04
                                        fudgeQQ (0|1|2|3|BONDED)
         GMX_QMMM_GRAD_LA=MM1           mdrun: link atoms are excluded in the
                                        gradient as if they were their MM1 atom
+        GMX_QMMM_ENERGY_CORRECTION=on  mdrun: the reported energy follows the
+                                       rules of the gradient, not those of the
+                                       QM Hamiltonian
+        GMX_QMMM_RESPONSE=on           mdrun: the forces get the response of
+                                       the Mulliken charges, which makes them
+                                       the gradient of that energy.  Costs two
+                                       extra DFTB+ runs per step and needs
+                                       SCCTolerance = 1e-8 or below
 
     The potential and the gradient follow separate rules.  mdrun prints the
     settings in effect, and grompp and mdrun write qmmm_topology_report.txt

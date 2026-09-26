@@ -50,6 +50,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
 #include "gromacs/fileio/confio.h"
 #include "gromacs/ewald/pme.h"
 //#include "gromacs/ewald/pme-internal.h"
@@ -329,6 +333,142 @@ void init_dftbplus(QMMM_QMrec*       qm,
     return;
 } /* init_dftbplus */
 
+/* The response of the Mulliken charges to the difference of the two potentials.
+ *
+ * The charges q are stationary (SCC) in the potential V' of the QM Hamiltonian plus the
+ *   potential of the periodic QM images, while the reported energy is built with the
+ *   potential of the gradient, V~ = V' + dV:
+ *
+ *     E = G(q) + q.V~ + 1/2 q.Phi.q ,   dE/dq = dV  at the SCC solution,
+ *     dE/dR = [DFTB+ gradient] + [gradient with the rules of the gradient] + dV . dq/dR .
+ *
+ *   The last term is what no other part of the code covers. With dV held fixed it is a
+ *   derivative with respect to the strength of the perturbation,
+ *
+ *     dV . dq/dR = d/d(eps) [ dW/dR ] ,
+ *     W(eps) = min_q [ G(q) + q.(V' + eps*dV) + 1/2 q.Phi.q ] ,
+ *
+ *   and dW/dR is an ordinary Hellmann-Feynman gradient of the perturbed calculation: the
+ *   DFTB+ gradient plus the electrostatic gradient built with the sources of V', at the
+ *   charges q(eps). Two extra SCC calculations, warm-started from the converged density,
+ *   give it by central difference. The perturbation eps*dV is tiny, so the difference stays
+ *   in the linear regime; a tight SCCTolerance is required, or its noise dominates.
+ *
+ * Only valid while the charge set of the gradient is the Mulliken set, i.e. not with
+ *   GMX_QMMM_GRAD_LA=exclude; there the link-atom charge is spread over the MM atoms, the
+ *   interaction stops being linear in the Mulliken charges, and the difference of the two
+ *   potentials is no longer the perturbation that gives the response. init_QMMM_exclusions()
+ *   switches the correction off in that case, and energy_correction() then returns no dV.
+ */
+static void response_correction(QMMM_rec*                  qr,
+                                QMMM_QMrec*                qm,
+                                const QMMM_MMrec&          mm,
+                                const t_commrec*           cr,
+                                t_nrnb*                    nrnb,
+                                gmx_wallcycle_t            wcycle,
+                                int                        variant,
+                                const double*              pot,
+                                double*                    potgrad,
+                                const std::vector<double>& dV,
+                                rvec*                      QMgrad,
+                                rvec*                      partgrad,
+                                rvec*                      MMgrad,
+                                rvec*                      MMgrad_full)
+{
+    const int    n       = qm->nrQMatoms_get();
+    const int    nMM     = mm.nrMMatoms;
+    const int    nMMfull = (variant == eqmmmPME) ? mm.nrMMatoms_full : 0;
+    const double eps     = qr->responseEps;
+
+    /* The extra SCC calculations overwrite both of these through the callback that supplies
+     * the potential of the periodic QM images; the step's own values are restored at the end.
+     */
+    std::vector<real>   qSaved(n);
+    std::vector<double> imageSaved(n);
+    for (int j = 0; j < n; j++)
+    {
+        qSaved[j]     = qm->QMcharges_get(j);
+        imageSaved[j] = qm->pot_qmqm_get(j);
+    }
+
+    std::vector<double> potPert(n), qPert(n);
+    std::vector<double> gPert[2];
+    rvec*               partPert[2];
+    rvec*               mmPert[2];
+    rvec*               mmFullPert[2];
+
+    for (int p = 0; p < 2; p++)
+    {
+        const double sign = (p == 0) ? 1. : -1.;
+        for (int j = 0; j < n; j++)
+        {
+            // DFTB+ takes the negative of the potential, as in the main call below
+            potPert[j] = pot[j] - sign * eps * dV[j];
+        }
+        gPert[p].assign(3 * n, 0.);
+        double ePert;
+        wallcycle_start(wcycle, ewcQM);
+        dftbp_set_external_potential(qm->dpcalc, potPert.data(), potgrad);
+        dftbp_get_energy(qm->dpcalc, &ePert);
+        dftbp_get_gross_charges(qm->dpcalc, qPert.data());
+        dftbp_get_gradients(qm->dpcalc, gPert[p].data());
+        wallcycle_stop(wcycle, ewcQM);
+
+        for (int j = 0; j < n; j++)
+        {
+            qm->QMcharges_set(j, (real) qPert[j]);
+        }
+        snew(partPert[p], n);
+        snew(mmPert[p], std::max(nMM, 1));
+        mmFullPert[p] = nullptr;
+        if (variant == eqmmmPME)
+        {
+            snew(mmFullPert[p], std::max(nMMfull, 1));
+        }
+        qr->gradient_QM_MM(cr, nrnb, wcycle, (variant == eqmmmPME ? *qr->pmedata : nullptr),
+                           variant, partPert[p], mmPert[p], mmFullPert[p], true);
+    }
+
+    const double inv2eps = 1. / (2. * eps);
+    for (int i = 0; i < n; i++)
+    {
+        for (int m = 0; m < DIM; m++)
+        {
+            QMgrad[i][m] += (real)((gPert[0][3 * i + m] - gPert[1][3 * i + m]) * inv2eps);
+            partgrad[i][m] += (real)((partPert[0][i][m] - partPert[1][i][m]) * inv2eps);
+        }
+    }
+    for (int k = 0; k < nMM; k++)
+    {
+        for (int m = 0; m < DIM; m++)
+        {
+            MMgrad[k][m] += (real)((mmPert[0][k][m] - mmPert[1][k][m]) * inv2eps);
+        }
+    }
+    for (int k = 0; k < nMMfull; k++)
+    {
+        for (int m = 0; m < DIM; m++)
+        {
+            MMgrad_full[k][m] += (real)((mmFullPert[0][k][m] - mmFullPert[1][k][m]) * inv2eps);
+        }
+    }
+
+    for (int p = 0; p < 2; p++)
+    {
+        sfree(partPert[p]);
+        sfree(mmPert[p]);
+        if (mmFullPert[p] != nullptr)
+        {
+            sfree(mmFullPert[p]);
+        }
+    }
+    for (int j = 0; j < n; j++)
+    {
+        qm->QMcharges_set(j, qSaved[j]);
+        qm->pot_qmqm_set(j, imageSaved[j]);
+    }
+} // response_correction
+
 real call_dftbplus(QMMM_rec*         qr,
                    const t_commrec*  cr,
                    QMMM_QMrec*       qm,
@@ -570,15 +710,53 @@ real call_dftbplus(QMMM_rec*         qr,
      * first by the second, so that the reported energy belongs to the reported forces. The
      * charges of the gradient are the ones update_gradient_charges() has just prepared.
      */
-    const double eCorr = qr->energy_correction(cr, nrnb, wcycle,
-                                               (qm->qmmm_variant_get() == eqmmmPME ? *qr->pmedata : nullptr),
-                                               qm->qmmm_variant_get());
+    const int    variant = qm->qmmm_variant_get();
+    struct gmx_pme_t* const pmeOrNull = (variant == eqmmmPME) ? *qr->pmedata : nullptr;
+
+    /* The interaction of the QM charges with their own periodic images.
+     * The callback hands DFTB+ the image potential V_img in every SCC iteration, and DFTB+
+     *   counts q.V_img in its energy in full. The Ewald energy of a charge distribution with
+     *   its own images is 1/2 q.V_img -- the other half would double-count every image pair --
+     *   and the image forces that gradient_QM_MM() adds are those of the halved term. The
+     *   energy is brought in line with them here. This is independent of the rules of the
+     *   potential and of the gradient, and applies even when the two coincide.
+     */
+    double eImage = 0.;
+    if (variant == eqmmmPME)
+    {
+        for (int i=0; i<n; i++)
+        {
+            eImage += (double) q[i] * qm->pot_qmqm_get(i) / HARTREE_TO_EV;
+        }
+        QMener -= 0.5 * eImage;
+    }
+
+    std::vector<double> dV;
+    const double eCorr = qr->energy_correction(cr, nrnb, wcycle, pmeOrNull, variant, &dV);
     QMener += eCorr;
     if (f_energy_corr && step % output_freq_energy_corr == 0)
     {
         fprintf(f_energy_corr, "%10d %20.10f %20.10f\n", step,
-                eCorr * HARTREE2KJ * AVOGADRO, QMener * HARTREE2KJ * AVOGADRO);
+                (eCorr - 0.5 * eImage) * HARTREE2KJ * AVOGADRO, QMener * HARTREE2KJ * AVOGADRO);
         fflush(f_energy_corr);
+    }
+
+    /* The forces get the response of the charges to the difference of the two potentials,
+     * which is the only term of the gradient of the energy above that nothing else covers.
+     * Nothing to do when the two sets of rules coincide: dV is then zero to round-off.
+     */
+    if (qr->responseCorrection && !dV.empty())
+    {
+        double maxdV = 0.;
+        for (double v : dV)
+        {
+            maxdV = std::max(maxdV, std::fabs(v));
+        }
+        if (maxdV > 1e-10)
+        {
+            response_correction(qr, qm, mm, cr, nrnb, wcycle, variant, pot, potgrad, dV,
+                                QMgrad, partgrad, MMgrad, MMgrad_full);
+        }
     }
 
     /* Optionally, write out the gradients while they are still separated.

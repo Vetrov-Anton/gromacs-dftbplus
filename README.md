@@ -1,8 +1,11 @@
 # GROMACS + DFTB+ — QM/MM with separate boundary rules for the QM Hamiltonian and the gradient
 
-> **Branch `develop`.** Everything of `main` plus `GMX_QMMM_ENERGY_CORRECTION`, section 3:
-> the reported energy is rebuilt with the rules of the gradient. Switch it off to reproduce
-> the energy of `main` bit for bit.
+> **Branch `develop`.** Everything of `main` plus section 3: the reported energy is rebuilt with
+> the rules of the gradient (`GMX_QMMM_ENERGY_CORRECTION`) and the forces get the response of the
+> Mulliken charges that its gradient needs (`GMX_QMMM_RESPONSE`), so that a boundary charge scheme
+> combined with exclusions of the gradient is a conservative model. This branch also halves the
+> energy of the QM periodic images and cuts the real-space potential at `rcoulomb`, as the forces
+> always did.
 
 A GROMACS 2021.7 build with the DFTB+ QM/MM interface (DFTB+ coupling by Kubař *et al.*),
 PLUMED and a configurable treatment of the QM/MM boundary:
@@ -13,9 +16,10 @@ PLUMED and a configurable treatment of the QM/MM boundary:
 2. **Exclusions of the QM–MM gradient** — QM–MM pairs removed up to 1-3 and scaled at 1-4,
    counted along the bond graph or taken from the bonded terms of the topology, with a
    separate rule for the link atoms.
-3. **Energy under the rules of the gradient** — the QM–MM electrostatics of the reported
-   energy is rebuilt with the rules of the gradient, so that the number and the forces belong
-   to the same model.
+3. **One model for the energy and the forces** — the QM–MM electrostatics of the reported
+   energy is rebuilt with the rules of the gradient, and the forces get the response of the
+   Mulliken charges to the difference of the two potentials, so that the forces are the
+   gradient of the reported energy.
 4. **Boundary treatment in grompp** — which bonded terms at the boundary are removed, and the
    QM–MM Lennard-Jones by the exclusion rules of the force field. Restraints are always kept.
 5. **Reports** — `grompp` and `mdrun` write, atom by atom, every term removed from the
@@ -129,8 +133,14 @@ topology, the MM–MM interactions and the QM/MM gradient keep the charges of th
 | `none` (default) | every MM charge in full |
 | `RC` | MM1 removed; `q0` at the midpoint of every MM1–MM2 bond (Lin & Truhlar 2005) |
 | `RCD` | MM1 removed; `2·q0` at every midpoint, and `q(MM2) − q0` on every MM2 (Lin & Truhlar 2005) |
-| `CS` | MM1 removed; `q(MM2) + q0` on every MM2, and a pair `+q0` / `−q0` on the MM1→MM2 line at 0.94 and 1.06 of the bond length (charge shift, Sherwood *et al.* 2003) |
+| `CS` | MM1 removed; `q(MM2) + q0` on every MM2, and a pair `+q0/0.12` / `−q0/0.12` on the MM1→MM2 line at 0.94 and 1.06 of the bond length (charge shift, Sherwood *et al.* 2003) |
 | `AMBER` | MM1 removed; the MM1 charges of a molecule spread evenly over all other MM atoms of the same molecule |
+
+`RC`, `RCD` and `CS` all conserve the total charge; `RCD` and `CS` conserve the dipole of every
+MM1–MM2 bond as well. Moving `q0` from MM1 onto MM2 changes that dipole by `q0·b`, with `b` the
+MM1→MM2 bond vector: `RCD` cancels it with the midpoint charge, and `CS` with its pair, whose
+dipole is `(q0/0.12)·(0.94 − 1.06)·b = −q0·b`. The magnitude of the `CS` pair is therefore set by
+its separation — `±q0` at ±0.06 of the bond length would restore only 12 % of the dipole.
 
 The fictitious charges follow the MM1 and MM2 atoms in every step. With PME they act on the
 QM atoms with the full `1/r` (they are not on the grid); with the cut-off variants with the
@@ -219,6 +229,19 @@ its reciprocal-space term `erf(βr)/r` is subtracted as a pair term; together wi
 real-space term `s·erfc(βr)/r` this gives `s/r` for the pair. The same construction is used
 for the MM1 charges removed from the potential in section 1.
 
+The real-space sums of the potential and of the gradient run over the same short-range list,
+which holds every MM atom within `rcoulomb` of *any* QM atom, so an individual pair can be
+farther apart than that. Both now drop such a pair, as they must to agree; the counter-term
+above is not cut off, since the reciprocal-space contribution is not either. An MM atom that
+is removed or scaled but is missing from the short-range list altogether is a fatal error with
+PME: its reciprocal-space term could not be corrected.
+
+Also with PME, DFTB+ receives the potential of the periodic images of the QM charges through a
+callback and counts `Σ_A q_A V_img(A)` in its energy in full, while the Ewald energy of a charge
+distribution with its own images is `½ Σ_A q_A V_img(A)` — and the image forces are those of the
+halved term. The reported energy is corrected accordingly, whatever the rules of section 1 and 2
+are. On a solvated tripeptide this is a fraction of a kJ/mol, but it varies with the geometry.
+
 ```
 QM/MM gradient: GMX_QMMM_GRAD_EXCL = 3, 11 QM--MM pairs removed, 16 scaled with GMX_QMMM_FUDGE_QQ = 0.8333;
   1 link atoms, GMX_QMMM_GRAD_LA = MM1.
@@ -228,12 +251,18 @@ The energy that belongs to this gradient is the subject of section 3.
 
 ---
 
-## 3. Energy under the rules of the gradient: `GMX_QMMM_ENERGY_CORRECTION` (mdrun)
+## 3. One model for the energy and the forces: `GMX_QMMM_ENERGY_CORRECTION`, `GMX_QMMM_RESPONSE` (mdrun)
 
 DFTB+ returns an energy whose QM–MM electrostatics is the one of the QM Hamiltonian, i.e. of the
 potential of section 1, while the forces are built with the rules of section 2. As soon as the two
-sets of rules differ, the reported energy and the reported forces belong to different models. The
-correction replaces the first contribution by the second:
+sets of rules differ, the reported energy and the reported forces belong to different models.
+Two corrections bring them back together: the first rebuilds the energy, the second supplies the
+term of its gradient that no force term covers. Both are on by default and both are identically
+zero when the two sets of rules coincide.
+
+### The energy: `GMX_QMMM_ENERGY_CORRECTION`
+
+The QM–MM contribution of the Hamiltonian is replaced by the one of the gradient:
 
 ```
 E = E(DFTB+) − Σ_A q_A φ_pot(A) + Σ_A q_A φ_grad(A)
@@ -249,24 +278,91 @@ this costs two extra PME calls per step and is done only when the two charge set
 | `on` (default) | the rules of the gradient, section 2 |
 | `off` | the rules of the QM Hamiltonian, section 1 |
 
-The correction is identically zero when the two sets of rules coincide, and with `off` the energy
-is the one the code produced before this option existed. The step costs 6–8 % more with the
+With `off` the energy is the one the code produced before this option existed, except for the
+image term of section 2, which is halved in either case. The step costs 6–8 % more with the
 correction switched on.
+
+### The forces: `GMX_QMMM_RESPONSE`
+
+The Mulliken charges are stationary (SCC) in the potential of the Hamiltonian, not in the one the
+energy above is built with, so the Hellmann–Feynman argument does not apply to that energy and its
+gradient carries one more term:
+
+```
+dE/dR = [DFTB+ gradient] + [gradient of section 2] + Σ_A (φ_grad − φ_pot)(A) · dq_A/dR
+```
+
+The last term is the response of the charges. It is evaluated without a coupled-perturbed
+calculation: with `dV = φ_grad − φ_pot` held fixed,
+
+```
+W(ε) = min_q [ G(q) + q·(φ_pot + ε·dV) + ½ q·Φ·q ]     ⟹     dV · dq/dR = ∂/∂ε [ ∂W/∂R ]
+correction = [ g(+ε) − g(−ε) ] / 2ε
+```
+
+where `g(±ε)` is the ordinary gradient of the SCC polarized by `φ_pot ± ε·dV`: the DFTB+ gradient
+plus the electrostatic gradient built with the *sources of the potential* — the charges of
+section 1, the fictitious points of the boundary scheme included, whose force is passed to MM1 and
+MM2 by the chain rule. Two extra DFTB+ calculations per step, warm-started from the converged
+density; `ε` is a fraction of `dV`, so the perturbation itself is tiny.
+
+| variable | values | default | |
+|---|---|---|---|
+| `GMX_QMMM_RESPONSE` | `on`, `off` | `on` | `off` leaves the forces without the response term |
+| `GMX_QMMM_RESPONSE_EPS` | float > 0 | `1e-3` | finite-difference step, as a fraction of `dV` |
+
+**Use a tight `SCCTolerance`, 1e-8 or below** (the tests below used 1e-10), or the SCC noise
+dominates the difference. `GMX_QMMM_RESPONSE=on` together with `GMX_QMMM_ENERGY_CORRECTION=off` is
+a fatal error: the two are one model.
+
+**Not available with `GMX_QMMM_GRAD_LA=exclude`.** There the link-atom charge is spread over the
+MM atoms, so both charge sets depend on the Mulliken charges, the QM–MM interaction is no longer
+linear in them, and the difference of the two potentials is not the perturbation that gives the
+response. mdrun prints a `NOTE` and switches the correction off; the forces of such a run are not
+the gradient of the reported energy.
 
 ```
 QM/MM energy: the QM--MM electrostatics of the reported energy follows the rules of the gradient
   (GMX_QMMM_ENERGY_CORRECTION = on).
+QM/MM forces: with the response of the Mulliken charges to the difference of the two
+  potentials (GMX_QMMM_RESPONSE = on, GMX_QMMM_RESPONSE_EPS = 0.001), by central finite
+  difference -- two extra DFTB+ calculations per step whenever the rules of the
+  potential and of the gradient differ. Use a tight SCCTolerance, 1e-8 or below.
 ```
 
-**What it does not do.** The correction changes the energy and never the forces. With different
-rules for the potential and for the gradient the forces are not the derivative of any function:
-what is missing from them is the charge response `Σ_A (φ_grad − φ_pot)(A) · dq_A/dR`, and no
-function of the coordinates added to the energy can produce it. The correction therefore makes the
-energy consistent with the force model and comparable between schemes, but it does not restore the
-conservation of energy in NVE — measured on a solvated tripeptide over 200 ps at 0.5 fs, the drift
-goes from 440 to 408 kJ/(mol·ns) for `CS` with `GRAD_EXCL=3` and `GRAD_LA=MM1`, both figures far
-above the 57 of matched rules. Where conservation matters, match the rules: `POT_SCHEME=none`
-with `GRAD_EXCL=0`.
+### Verification
+
+Central differences of the total potential energy (`h = 1e-4` nm, `SCCTolerance = 1e-10`) against
+the forces of the same run, on a solvated tripeptide with one link atom, for the MM1 atoms of the
+two cuts and one QM1 atom. |F(code) − (−dE/dx)| in kJ mol⁻¹ nm⁻¹:
+
+| setup | MM1 (atom 9) | MM1 (atom 21) | QM1 (atom 19) |
+|---|---|---|---|
+| `POT_SCHEME=none`, `GRAD_EXCL=0` (rules coincide) | 0.008 | 0.008 | 0.001 |
+| `CS`, `GRAD_EXCL=3`, response **on** | 0.006 | 0.010 | 0.002 |
+| `CS`, `GRAD_EXCL=3`, response **off** | 97.5 | 194.3 | 61.3 |
+| `RCD`, `GRAD_EXCL=3`, response **on** | 0.006 | 0.005 | 0.002 |
+
+The forces there are 125–640 kJ mol⁻¹ nm⁻¹, so with the response the agreement is at the level of
+the finite-difference noise, and it is the same with matched rules as with a charge scheme. The
+same check with `GMX_QMMM_VARIANT` 2, 3 and 4 (switch, reaction field, shift) gives 0.000–0.010,
+so the kernels of the fictitious charges agree with their potential for every variant.
+
+Energy conservation, 50 ps NVE on that system after minimization (0.5 fs, `SCCTolerance = 1e-10`).
+The drift is the slope of a linear fit of the total energy over 5–50 ps, the blocks are the same
+slope over 10 ps stretches, and the RMS is the scatter about the fit:
+
+| run | drift, kJ/(mol·ns) | by blocks | RMS, kJ/mol | ns/day |
+|---|---|---|---|---|
+| `none`, `GRAD_EXCL=0` (rules coincide) | 69.7 | 77 ± 4 | 0.174 | 1.52 |
+| `CS`, `GRAD_EXCL=3`, response **on** | 57.1 | 66 ± 15 | 0.196 | 0.85 |
+| `RCD`, `GRAD_EXCL=3`, response **on** | 77.0 | 72 ± 14 | 0.189 | 0.85 |
+| `CS`, `GRAD_EXCL=3`, response **off** | 560.5 | 969 ± 897 | 7.677 | 1.51 |
+
+With the response a boundary charge scheme combined with the exclusions of the gradient conserves
+energy as well as matched rules do. Without it the same run drifts ten times faster, its scatter
+is forty times larger, and the block slopes vary by as much as their mean — the energy wanders
+rather than drifts. The price is the last column: 1.8 times slower.
 
 ---
 
@@ -422,6 +518,8 @@ gradient is the sum of the two entries.
 | `GMX_QMMM_GRAD_LA` | mdrun | `MM1`, `QM1`, `exclude` | `MM1` | `MM1` |
 | `GMX_QMMM_FUDGE_QQ` | mdrun | float | force-field `fudgeQQ` | — |
 | `GMX_QMMM_ENERGY_CORRECTION` | mdrun | `on`, `off` | `on` | — |
+| `GMX_QMMM_RESPONSE` | mdrun | `on`, `off` | `on` | — |
+| `GMX_QMMM_RESPONSE_EPS` | mdrun | float > 0 | `1e-3` | — |
 | `GMX_QMMM_REPORTS` | grompp, mdrun | `off`, `0`, `no`, `false` | on | — |
 | `GMX_QMMM_TOPOLOGY_REPORT` | grompp | file name | `qmmm_topology_report.txt` | — |
 | `GMX_QMMM_EXCLUSION_REPORT` | mdrun | file name | `qmmm_exclusion_report.txt` | — |
@@ -437,8 +535,9 @@ gradient is the sum of the two entries.
 | `GMX_DFTB_ENERGY_CORR` | mdrun | stride in steps | off | — |
 
 An unknown value of `GMX_QMMM_BONDED_SCHEME`, `GMX_QMMM_LJ_SCHEME`, `GMX_QMMM_POT_SCHEME`,
-`GMX_QMMM_GRAD_EXCL`, `GMX_QMMM_GRAD_LA`, `GMX_QMMM_FUDGE_QQ` or `GMX_QMMM_ENERGY_CORRECTION`
-is a fatal error.
+`GMX_QMMM_GRAD_EXCL`, `GMX_QMMM_GRAD_LA`, `GMX_QMMM_FUDGE_QQ`, `GMX_QMMM_ENERGY_CORRECTION`,
+`GMX_QMMM_RESPONSE` or `GMX_QMMM_RESPONSE_EPS` is a fatal error, and so is `GMX_QMMM_RESPONSE=on`
+with `GMX_QMMM_ENERGY_CORRECTION=off`.
 
 ---
 
