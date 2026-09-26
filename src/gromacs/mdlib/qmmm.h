@@ -394,13 +394,12 @@ public:
     //   Called at the beginning of gradient_QM_MM(); does nothing unless GradLa::Exclude.
     void update_gradient_charges(int variant);
 
-    // Energy of the QM--MM electrostatics under the rules of the gradient
-    //   (GMX_QMMM_ENERGY_CORRECTION, on by default). DFTB+ returns an energy that contains
-    //   the interaction of the QM charges with the potential of GMX_QMMM_POT_SCHEME, while the
-    //   forces are the derivative, at frozen charges, of the interaction built with the rules
-    //   of the gradient. With the correction the first term is replaced by the second, so that
-    //   the reported energy and the forces describe the same model.
-    bool energyCorrection = true;
+    // Energy of the QM--MM electrostatics under the rules of the gradient. DFTB+ returns an
+    //   energy that contains the interaction of the QM charges with the potential of
+    //   GMX_QMMM_POT_SCHEME, while the forces are the derivative, at frozen charges, of the
+    //   interaction built with the rules of the gradient. The correction replaces the first
+    //   term by the second. It goes together with the response correction of the forces --
+    //   the two are one model -- so both follow responseCorrection below.
     // Scratch for energy_correction(), kept between steps to avoid reallocation.
     std::vector<real> energyPotWork;
     std::vector<real> energyPotWorkLr;
@@ -420,6 +419,9 @@ public:
     //   The Mulliken charges are stationary in the potential of the QM Hamiltonian, while the
     //   energy above is built with the potential of the gradient, so the gradient of that
     //   energy contains the response of the charges, dV * dq/dR, which no other term covers.
+    // GMX_QMMM_RESPONSE switches the whole model: with it on, the reported energy follows the
+    //   rules of the gradient and the forces get the response term that makes them its
+    //   gradient; with it off, both are what the code did before either existed.
     bool   responseCorrection = true;
     double responseEps        = 1e-3;
 

@@ -952,7 +952,7 @@ void QMMM_rec::receiver_potential(int               molecule,
 } // receiver_potential
 
 /* The energy of the QM--MM electrostatics under the rules of the gradient
- *   (GMX_QMMM_ENERGY_CORRECTION=on, the default).
+ *   (part of GMX_QMMM_RESPONSE, on by default).
  *
  * DFTB+ returns an energy that contains the interaction of the QM charges with the potential
  *   that went into its Hamiltonian, i.e. built with GMX_QMMM_POT_SCHEME:
@@ -987,7 +987,7 @@ double QMMM_rec::energy_correction(const t_commrec*     cr,
     {
         dVout->clear();
     }
-    if (!energyCorrection || variant == eqmmmVACUO)
+    if (!responseCorrection || variant == eqmmmVACUO)
     {
         return 0.;
     }

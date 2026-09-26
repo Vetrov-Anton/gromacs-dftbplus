@@ -725,7 +725,7 @@ real call_dftbplus(QMMM_rec*         qr,
 
     /* The energy of DFTB+ contains the QM--MM electrostatics of the QM Hamiltonian
      * (GMX_QMMM_POT_SCHEME), while the gradient above was built with the rules of
-     * GMX_QMMM_GRAD_*. Unless switched off with GMX_QMMM_ENERGY_CORRECTION=off, replace the
+     * GMX_QMMM_GRAD_*. Unless switched off with GMX_QMMM_RESPONSE=off, replace the
      * first by the second, so that the reported energy belongs to the reported forces. The
      * charges of the gradient are the ones update_gradient_charges() has just prepared.
      */

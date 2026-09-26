@@ -1188,29 +1188,6 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
         gradFudgeQQ = static_cast<real>(f);
     }
 
-    // The reported QM energy follows the rules of the gradient rather than those of the
-    //   Hamiltonian; switched off with GMX_QMMM_ENERGY_CORRECTION=off, which reproduces the
-    //   energy of the earlier code exactly.
-    energyCorrection = true;
-    if ((env = getenv("GMX_QMMM_ENERGY_CORRECTION")) != nullptr)
-    {
-        if (gmx_strcasecmp(env, "on") == 0 || gmx_strcasecmp(env, "yes") == 0
-            || gmx_strcasecmp(env, "true") == 0 || std::strcmp(env, "1") == 0)
-        {
-            energyCorrection = true;
-        }
-        else if (gmx_strcasecmp(env, "off") == 0 || gmx_strcasecmp(env, "no") == 0
-                 || gmx_strcasecmp(env, "false") == 0 || std::strcmp(env, "0") == 0)
-        {
-            energyCorrection = false;
-        }
-        else
-        {
-            gmx_fatal(FARGS,
-                      "GMX_QMMM_ENERGY_CORRECTION must be on or off, but it is '%s'.", env);
-        }
-    }
-
     gradLa = GradLa::MM1;
     if ((env = getenv("GMX_QMMM_GRAD_LA")) != nullptr)
     {
@@ -1232,12 +1209,18 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
         }
     }
 
-    /* The forces get the response of the Mulliken charges to the difference of the two
-     *   potentials (GMX_QMMM_RESPONSE=on|off, on by default). The charges are stationary in
-     *   the potential of the QM Hamiltonian, while the reported energy is built with the
-     *   potential of the gradient, so that energy has a term dV * dq/dR that no force term
-     *   covers. It is evaluated by central finite difference, with two extra DFTB+
-     *   calculations per step, and only when the two sets of rules actually differ.
+    /* GMX_QMMM_RESPONSE (on by default) switches the whole model of the reported energy and
+     *   of the forces:
+     *     on  -- the QM--MM electrostatics of the energy is rebuilt with the rules of the
+     *            gradient (energy_correction()), and the forces get the response of the
+     *            Mulliken charges to the difference of the two potentials, dV * dq/dR, which
+     *            makes them the gradient of that energy. The response is a central finite
+     *            difference, two extra DFTB+ calculations per step, and is skipped when the
+     *            two sets of rules coincide, which makes both corrections zero anyway;
+     *     off -- both are left out, i.e. the energy follows the rules of the QM Hamiltonian
+     *            and the forces those of the gradient, as the code did before either existed.
+     *   The two never come apart: the response correction is the gradient of exactly the
+     *   energy that the energy correction reports.
      */
     responseCorrection = true;
     if ((env = getenv("GMX_QMMM_RESPONSE")) != nullptr)
@@ -1266,13 +1249,6 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
             gmx_fatal(FARGS, "GMX_QMMM_RESPONSE_EPS must be a positive number, but it is '%s'.", env);
         }
         responseEps = f;
-    }
-    if (responseCorrection && !energyCorrection)
-    {
-        gmx_fatal(FARGS,
-                  "GMX_QMMM_RESPONSE is on while GMX_QMMM_ENERGY_CORRECTION is off. The two "
-                  "belong to one model: the response correction makes the forces the gradient "
-                  "of the energy that the energy correction reports. Switch both on or both off.");
     }
 
     // ---- topology ----
@@ -1849,17 +1825,15 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
             "GMX_QMMM_FUDGE_QQ = %g;\n  %zu link atoms, GMX_QMMM_GRAD_LA = %s.\n",
             gradBonded ? "BONDED" : gmx::formatString("%d", gradExcl).c_str(), nExcluded, nScaled,
             gradFudgeQQ, linkAtoms.size(), gradLaName(gradLa));
-    fprintf(stdout,
-            "QM/MM energy: the QM--MM electrostatics of the reported energy follows the rules of the %s\n"
-            "  (GMX_QMMM_ENERGY_CORRECTION = %s).\n",
-            energyCorrection ? "gradient" : "QM Hamiltonian", energyCorrection ? "on" : "off");
     if (responseCorrection)
     {
         fprintf(stdout,
-                "QM/MM forces: with the response of the Mulliken charges to the difference of the two\n"
-                "  potentials (GMX_QMMM_RESPONSE = on, GMX_QMMM_RESPONSE_EPS = %g), by central finite\n"
-                "  difference -- two extra DFTB+ calculations per step whenever the rules of the\n"
-                "  potential and of the gradient differ. Use a tight SCCTolerance, 1e-8 or below.\n",
+                "QM/MM energy and forces (GMX_QMMM_RESPONSE = on): the QM--MM electrostatics of the\n"
+                "  reported energy follows the rules of the gradient, and the forces carry the response\n"
+                "  of the Mulliken charges to the difference of the two potentials, which makes them the\n"
+                "  gradient of that energy. Central finite difference, GMX_QMMM_RESPONSE_EPS = %g -- two\n"
+                "  extra DFTB+ calculations per step whenever the rules of the potential and of the\n"
+                "  gradient differ. Use a tight SCCTolerance, 1e-8 or below.\n",
                 responseEps);
         if (gradLa == GradLa::Exclude)
         {
@@ -1874,9 +1848,9 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
     else
     {
         fprintf(stdout,
-                "QM/MM forces: without the response of the Mulliken charges (GMX_QMMM_RESPONSE = off).\n"
-                "  Whenever the rules of the potential and of the gradient differ, the forces are not\n"
-                "  the gradient of the reported energy.\n");
+                "QM/MM energy and forces (GMX_QMMM_RESPONSE = off): the reported energy follows the\n"
+                "  rules of the QM Hamiltonian and the forces those of the gradient. Whenever the two\n"
+                "  differ, the forces are not the gradient of the reported energy.\n");
     }
 
     // Detailed report, atom by atom, in a separate file.
