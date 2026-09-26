@@ -1408,7 +1408,7 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
        * virial of the reciprocal-space QM--MM and QM--QM-image energy. It replaces the single
        * sum x (x) F of the reciprocal-space forces, which is not the virial of an Ewald sum.
        */
-      const bool wantVirial = virialCorrection && computeVirial;
+      const bool wantVirial = computeVirial;
       matrix recipVirAll, recipVirMM, recipSingleSum;
       clear_mat(recipVirAll);
       clear_mat(recipVirMM);

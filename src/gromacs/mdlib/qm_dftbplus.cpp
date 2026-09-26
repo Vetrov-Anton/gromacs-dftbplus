@@ -460,7 +460,7 @@ static void response_correction(QMMM_rec*                  qr,
         }
     }
 
-    if (qr->virialCorrection && qr->computeVirial)
+    if (qr->computeVirial)
     {
         for (int a = 0; a < DIM; a++)
         {

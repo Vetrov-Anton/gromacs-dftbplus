@@ -1257,28 +1257,6 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
             gmx_fatal(FARGS, "GMX_QMMM_RESPONSE must be on or off, but it is '%s'.", env);
         }
     }
-    /* The QM/MM forces supply their own virial (GMX_QMMM_VIRIAL=on|off). Switching it off
-     *   reproduces the behaviour of the code before it existed: the QM/MM forces then
-     *   contribute nothing to the virial, and the pressure of a QM/MM run is wrong.
-     */
-    virialCorrection = true;
-    if ((env = getenv("GMX_QMMM_VIRIAL")) != nullptr)
-    {
-        if (gmx_strcasecmp(env, "on") == 0 || gmx_strcasecmp(env, "yes") == 0
-            || gmx_strcasecmp(env, "true") == 0 || std::strcmp(env, "1") == 0)
-        {
-            virialCorrection = true;
-        }
-        else if (gmx_strcasecmp(env, "off") == 0 || gmx_strcasecmp(env, "no") == 0
-                 || gmx_strcasecmp(env, "false") == 0 || std::strcmp(env, "0") == 0)
-        {
-            virialCorrection = false;
-        }
-        else
-        {
-            gmx_fatal(FARGS, "GMX_QMMM_VIRIAL must be on or off, but it is '%s'.", env);
-        }
-    }
     if ((env = getenv("GMX_QMMM_RESPONSE_EPS")) != nullptr)
     {
         char*        end = nullptr;
@@ -2431,7 +2409,7 @@ real QMMM_rec::calculate_QMMM(const t_commrec*      cr,
      * replaced by its exact virial, which gradient_QM_MM() has prepared.
      * Rectangular boxes only, like the rest of this interface.
      */
-    if (GMX_QMMM_DFTBPLUS && virialCorrection && forceWithVirial->computeVirial_)
+    if (GMX_QMMM_DFTBPLUS && forceWithVirial->computeVirial_)
     {
         const auto nearestImage = [qm_](const rvec x, rvec image) {
             for (int d = 0; d < DIM; d++)

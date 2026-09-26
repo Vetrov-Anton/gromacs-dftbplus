@@ -423,14 +423,13 @@ public:
     bool   responseCorrection = true;
     double responseEps        = 1e-3;
 
-    // Virial of the QM/MM forces (GMX_QMMM_VIRIAL). These forces live in a buffer of their
-    //   own, so their virial has to be supplied here rather than through the single sum over
-    //   the shift forces. computeVirial says whether this step needs it at all, and
+    // Virial of the QM/MM forces. These forces live in a buffer of their own, so their
+    //   virial has to be supplied here rather than through the single sum over the shift
+    //   forces. computeVirial says whether this step needs it at all, and
     //   recipVirialCorrection holds what replaces the single sum x (x) F of the
     //   reciprocal-space PME forces by the exact reciprocal-space virial; gradient_QM_MM()
     //   fills it.
-    bool   virialCorrection = true;
-    bool   computeVirial    = false;
+    bool   computeVirial = false;
     matrix recipVirialCorrection = { { 0 } };
 
     // Add the fictitious point charges of the boundary scheme to the potential

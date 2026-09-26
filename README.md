@@ -385,7 +385,7 @@ rather than drifts. The price is the last column: 1.8 times slower.
 
 ---
 
-## 4. Virial of the QM/MM forces: `GMX_QMMM_VIRIAL` (mdrun)
+## 4. Virial of the QM/MM forces (mdrun)
 
 The QM/MM forces are added to a buffer of their own, which the single sum over the shift forces
 does not see, so without a contribution of their own they are simply missing from the virial and
@@ -402,10 +402,8 @@ alone, which is not part of the QM/MM energy, and passes the difference on. With
 correction the same difference is taken for the two perturbed calculations and differentiated,
 because the response has forces of its own.
 
-| value | effect |
-|---|---|
-| `on` (default) | the QM/MM forces contribute their virial |
-| `off` | they do not, which reproduces the behaviour of the code before this existed |
+This is not optional: without it the pressure of a QM/MM run is simply wrong, and there is no
+setting that reproduces the earlier behaviour.
 
 **Extra work.** Only on the steps where GROMACS asks for the virial — `nstcalcenergy`, or every
 `nstpcouple` step with a barostat — and only with PME, where it is one more PME call, plus two
@@ -424,22 +422,24 @@ dipeptide with one link atom (`dU/dε` around −1.1·10⁵ kJ/mol):
 | `CS`, `GRAD_EXCL=3`, response on | −4.9 | 0.9 bar |
 | `CS`, `GRAD_EXCL=3`, `GRAD_LA=exclude`, response on | −5.1 | 0.9 bar |
 | `CS`, `GRAD_EXCL=3`, reaction field | 0.2 | 0.0 bar |
-| the same with `GMX_QMMM_VIRIAL=off` | −814.2 | **141 bar** |
+| the same without the contribution of the QM/MM forces | −814.2 | **141 bar** |
 
-So the QM/MM forces were missing about 140 bar of pressure from that system, and what is left
+The last row is what the code did before this section existed: the QM/MM forces were missing
+about 140 bar of pressure from that system, and what is left
 with the correction is the noise of the finite difference. The reaction-field row has no
 reciprocal space and comes out exact.
 
 Measured cost on the same tripeptide as above (2000 steps, `nstcalcenergy` as given):
 
-| | virial off | virial on |
+| | without this virial | with it |
 |---|---|---|
 | response off, `nstcalcenergy = 1` | 2.43 ns/day | 1.88 ns/day |
 | response off, `nstcalcenergy = 100` | — | 2.81 ns/day |
 | response on, `nstcalcenergy = 1` | 0.97 ns/day | 0.96 ns/day |
 | response on, `nstcalcenergy = 100` | — | 1.03 ns/day |
 
-The virial costs 23 % when it is asked for at every step and nothing else is running, 1 % when
+(The first column was measured with a build that leaves the contribution out.) The virial costs
+23 % when it is asked for at every step and nothing else is running, 1 % when
 the response correction is on — the extra PME calls disappear next to the extra SCC ones — and
 effectively nothing at a realistic `nstcalcenergy`.
 
@@ -599,7 +599,6 @@ gradient is the sum of the two entries.
 | `GMX_QMMM_ENERGY_CORRECTION` | mdrun | `on`, `off` | `on` | — |
 | `GMX_QMMM_RESPONSE` | mdrun | `on`, `off` | `on` | — |
 | `GMX_QMMM_RESPONSE_EPS` | mdrun | float > 0 | `1e-3` | — |
-| `GMX_QMMM_VIRIAL` | mdrun | `on`, `off` | `on` | — |
 | `GMX_QMMM_REPORTS` | grompp, mdrun | `off`, `0`, `no`, `false` | on | — |
 | `GMX_QMMM_TOPOLOGY_REPORT` | grompp | file name | `qmmm_topology_report.txt` | — |
 | `GMX_QMMM_EXCLUSION_REPORT` | mdrun | file name | `qmmm_exclusion_report.txt` | — |
@@ -616,8 +615,8 @@ gradient is the sum of the two entries.
 
 An unknown value of `GMX_QMMM_BONDED_SCHEME`, `GMX_QMMM_LJ_SCHEME`, `GMX_QMMM_POT_SCHEME`,
 `GMX_QMMM_GRAD_EXCL`, `GMX_QMMM_GRAD_LA`, `GMX_QMMM_FUDGE_QQ`, `GMX_QMMM_ENERGY_CORRECTION`,
-`GMX_QMMM_RESPONSE`, `GMX_QMMM_RESPONSE_EPS` or `GMX_QMMM_VIRIAL` is a fatal error, and so is
-`GMX_QMMM_RESPONSE=on` with `GMX_QMMM_ENERGY_CORRECTION=off`.
+`GMX_QMMM_RESPONSE` or `GMX_QMMM_RESPONSE_EPS` is a fatal error, and so is `GMX_QMMM_RESPONSE=on`
+with `GMX_QMMM_ENERGY_CORRECTION=off`.
 
 ---
 
