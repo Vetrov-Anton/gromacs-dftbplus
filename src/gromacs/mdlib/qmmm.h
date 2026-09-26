@@ -423,6 +423,16 @@ public:
     bool   responseCorrection = true;
     double responseEps        = 1e-3;
 
+    // Virial of the QM/MM forces (GMX_QMMM_VIRIAL). These forces live in a buffer of their
+    //   own, so their virial has to be supplied here rather than through the single sum over
+    //   the shift forces. computeVirial says whether this step needs it at all, and
+    //   recipVirialCorrection holds what replaces the single sum x (x) F of the
+    //   reciprocal-space PME forces by the exact reciprocal-space virial; gradient_QM_MM()
+    //   fills it.
+    bool   virialCorrection = true;
+    bool   computeVirial    = false;
+    matrix recipVirialCorrection = { { 0 } };
+
     // Add the fictitious point charges of the boundary scheme to the potential
     //   on the QM atoms (in e/nm, before the conversion to atomic units).
     void add_boundary_scheme_potential(int variant, real* pot);
@@ -501,16 +511,40 @@ public:
     // With gradientRules the potential is built with the charges and the exclusion factors of
     //   the gradient (GMX_QMMM_GRAD_*) instead of those of GMX_QMMM_POT_SCHEME; used by
     //   energy_correction(). The default is the potential that goes into the QM Hamiltonian.
-    void calculate_SR_QM_MM(int   variant,
-                            real* pot,
-                            bool  gradientRules = false);
+    //   With mmCharges != nullptr those charges are used for the MM atoms instead of the
+    //   ones the rules would give (the short-range list for SR, the full list for LR);
+    //   receiver_potential() needs the potential of unit charges.
+    void calculate_SR_QM_MM(int         variant,
+                            real*       pot,
+                            bool        gradientRules = false,
+                            const real* mmCharges     = nullptr);
     
     void calculate_LR_QM_MM(const t_commrec*  cr,
                             t_nrnb*           nrnb,
                             gmx_wallcycle_t   wcycle,
                             struct gmx_pme_t* pmedata,
                             real*             pot,
-                            bool              gradientRules = false);
+                            bool              gradientRules = false,
+                            const real*       mmCharges     = nullptr);
+
+    // GMX_QMMM_GRAD_LA=exclude: the potential on the QM atoms of a unit charge on every MM
+    //   atom that receives the charge of the link atoms of molecule \p molecule, with the
+    //   exclusions of the gradient. It is the geometric factor of the response of a link
+    //   atom, see energy_correction(); it does not depend on the Mulliken charges.
+    void receiver_potential(int               molecule,
+                            const t_commrec*  cr,
+                            t_nrnb*           nrnb,
+                            gmx_wallcycle_t   wcycle,
+                            struct gmx_pme_t* pmedata,
+                            int               variant,
+                            real*             pot);
+    // Scratch for it: unit charges on the short-range and on the full MM list, the position
+    //   of every atom in the full MM list (-1 for a QM atom; the list is static, so this is
+    //   built once), and, for every QM atom, the molecule whose link atom it is, or -1.
+    std::vector<real> receiverChargesSR;
+    std::vector<real> receiverChargesFull;
+    std::vector<int>  fullIndexOfAtom;
+    std::vector<int>  laMoleculeOfQmAtom;
     
     // With charges != nullptr the potential of the periodic images is built with that charge
     //   set instead of the Mulliken charges, and the result is not stored in the QM record;

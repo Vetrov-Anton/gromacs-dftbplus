@@ -127,7 +127,8 @@ static inline real pbc_dist_qmmm(matrix box, const rvec x1, const rvec x2)
 
 void QMMM_rec::calculate_SR_QM_MM(int variant,
                                   real *pot,
-                                  bool gradientRules)
+                                  bool gradientRules,
+                                  const real* mmCharges)
 {
   /* as the last argument is expected: fr->ewaldcoeff_q */
   QMMM_QMrec& qm_ = qm[0];
@@ -145,6 +146,12 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
   if (gradientRules)
   {
       qPot = gradChargesMM.empty() ? mm_.MMcharges.data() : gradChargesMM.data();
+  }
+  /* receiver_potential() asks for the potential of a charge set of its own, with the
+   * exclusions of the gradient. */
+  if (mmCharges != nullptr)
+  {
+      qPot = mmCharges;
   }
   const auto scaleOf = [this, gradientRules](int j, int k) {
       return gradientRules ? mm[0].qmmmScaleFactorGrad(j, k) : mm[0].qmmmScaleFactorPot(j, k);
@@ -503,7 +510,8 @@ void QMMM_rec::calculate_LR_QM_MM(const t_commrec *cr,
                                   gmx_wallcycle_t wcycle,
                                   struct gmx_pme_t *pmedata,
                                   real *pot,
-                                  bool gradientRules)
+                                  bool gradientRules,
+                                  const real* mmCharges)
 {
   QMMM_QMrec& qm_      = qm[0];
   QMMM_MMrec& mm_      = mm[0];
@@ -546,11 +554,13 @@ void QMMM_rec::calculate_LR_QM_MM(const t_commrec *cr,
       pme_full.x[n + j][XX] = mm_.xMM_full[j][XX];
       pme_full.x[n + j][YY] = mm_.xMM_full[j][YY];
       pme_full.x[n + j][ZZ] = mm_.xMM_full[j][ZZ];
-      pme_full.q[n + j]     = gradientRules ? gradChargeMMfull(j) : mm_.MMcharges_full[j];
+      pme_full.q[n + j]     = (mmCharges != nullptr)
+                                      ? mmCharges[j]
+                                      : (gradientRules ? gradChargeMMfull(j) : mm_.MMcharges_full[j]);
    // printf("MM %5d %8.5f %8.5f %8.5f %8.5f\n", j+1, pme->x[n+j][XX], pme->x[n+j][YY], pme->x[n+j][ZZ], pme->q[n + j]);
   }
   /* the AMBER shift belongs to the Hamiltonian only, so the rules of the gradient skip it */
-  if (!potShiftFull.empty() && !gradientRules)
+  if (!potShiftFull.empty() && !gradientRules && mmCharges == nullptr)
   {
       for (int j=0; j<ne; j++)
       {
@@ -882,6 +892,65 @@ void QMMM_rec::calculate_complete_QM_QM(const t_commrec*  cr,
  ***  GRADIENTS       *************
  **********************************/
 
+/* GMX_QMMM_GRAD_LA=exclude: the potential on the QM atoms of a unit charge on every MM atom
+ *   that receives the charge of the link atoms of this molecule, built with the exclusions of
+ *   the gradient. It is a purely geometric quantity -- it does not contain the Mulliken
+ *   charges -- and it is what turns the response of a link atom into a single number, see
+ *   energy_correction(). A receiver that is off the short-range list contributes through the
+ *   reciprocal space only, which is right: its real-space term is beyond the cut-off.
+ */
+void QMMM_rec::receiver_potential(int               molecule,
+                                  const t_commrec*  cr,
+                                  t_nrnb*           nrnb,
+                                  gmx_wallcycle_t   wcycle,
+                                  struct gmx_pme_t* pmedata,
+                                  int               variant,
+                                  real*             pot)
+{
+    QMMM_QMrec& qm_ = qm[0];
+    QMMM_MMrec& mm_ = mm[0];
+    const int   n   = qm_.nrQMatoms;
+
+    receiverChargesSR.assign(mm_.nrMMatoms, real(0.0));
+    for (int a : gradLaMolecules[molecule].receivers)
+    {
+        const int k = mm_.localIndexOfAtom[a];
+        if (k >= 0)
+        {
+            receiverChargesSR[k] = real(1.0);
+        }
+    }
+    calculate_SR_QM_MM(variant, pot, true, receiverChargesSR.data());
+
+    if (variant == eqmmmPME)
+    {
+        // the full MM list is static, so the reverse map is built once
+        if (fullIndexOfAtom.empty())
+        {
+            fullIndexOfAtom.assign(mm_.localIndexOfAtom.size(), -1);
+            for (int k = 0; k < mm_.nrMMatoms_full; k++)
+            {
+                fullIndexOfAtom[mm_.indexMM_full[k]] = k;
+            }
+        }
+        receiverChargesFull.assign(mm_.nrMMatoms_full, real(0.0));
+        for (int a : gradLaMolecules[molecule].receivers)
+        {
+            const int k = fullIndexOfAtom[a];
+            if (k >= 0)
+            {
+                receiverChargesFull[k] = real(1.0);
+            }
+        }
+        std::vector<real> potLr(n, real(0.0));
+        calculate_LR_QM_MM(cr, nrnb, wcycle, pmedata, potLr.data(), true, receiverChargesFull.data());
+        for (int j = 0; j < n; j++)
+        {
+            pot[j] += potLr[j];
+        }
+    }
+} // receiver_potential
+
 /* The energy of the QM--MM electrostatics under the rules of the gradient
  *   (GMX_QMMM_ENERGY_CORRECTION=on, the default).
  *
@@ -960,42 +1029,130 @@ double QMMM_rec::energy_correction(const t_commrec*     cr,
         ePot += static_cast<double>(qm_.QMcharges[j]) * phiPot[j];
     }
 
-    /* The difference of the two potentials is what the response correction of the forces
-     * perturbs the SCC with. With GMX_QMMM_GRAD_LA=exclude the charge sets differ as well,
-     * the interaction is then not linear in the Mulliken charges, and a plain difference of
-     * potentials is not the right perturbation; the caller is told so by an empty vector.
-     */
-    if (dVout != nullptr && gradChargesQM.empty())
-    {
-        dVout->resize(n);
-        for (int j = 0; j < n; j++)
-        {
-            (*dVout)[j] = phiGrad[j] - phiPot[j];
-        }
-    }
-
     /* Periodic images of the QM charges, only when the two charge sets differ -- otherwise
      * the two terms are identical and cancel. The factor of 1/2 is the one of the Ewald
      * energy of a charge distribution with its own images; call_dftbplus() has already
      * replaced the full term that DFTB+ counted by the halved one, so what is left here is
      * half of the difference between the two charge sets.
      */
+    std::vector<double> imgGrad, imgPot;
     if (variant == eqmmmPME && !gradChargesQM.empty())
     {
+        imgGrad.resize(n);
+        imgPot.resize(n);
         calculate_complete_QM_QM(cr, nrnb, wcycle, pmedata, energyPotWork.data(), gradChargesQM.data());
         for (int j = 0; j < n; j++)
         {
-            eGrad += 0.5 * static_cast<double>(gradChargesQM[j]) * static_cast<double>(energyPotWork[j]);
+            imgGrad[j] = static_cast<double>(energyPotWork[j]);
+            eGrad += 0.5 * static_cast<double>(gradChargesQM[j]) * imgGrad[j];
         }
         calculate_complete_QM_QM(cr, nrnb, wcycle, pmedata, energyPotWork.data(), qm_.QMcharges);
         for (int j = 0; j < n; j++)
         {
-            ePot += 0.5 * static_cast<double>(qm_.QMcharges[j]) * static_cast<double>(energyPotWork[j]);
+            imgPot[j] = static_cast<double>(energyPotWork[j]);
+            ePot += 0.5 * static_cast<double>(qm_.QMcharges[j]) * imgPot[j];
+        }
+    }
+
+    /* The perturbation that the response correction of the forces applies to the SCC:
+     *   dE/dq at the SCC solution. The charges are stationary in phi_pot plus the potential
+     *   of their own images, so dG/dq = -(phi_pot + V_img[q]), and what is left is the
+     *   derivative of the terms above.
+     *
+     * With the plain charge sets (every GMX_QMMM_GRAD_LA but exclude) the QM--MM term is
+     *   linear in q and the image terms cancel, so this is simply phi_grad - phi_pot.
+     *
+     * With GMX_QMMM_GRAD_LA=exclude a link atom L carries no charge in the gradient, and
+     *   its Mulliken charge is spread over the receivers of its molecule, q_k += c * q_L
+     *   with c = scalefactor / (number of receivers). Both charge sets then depend on q,
+     *   the QM--MM term is quadratic in it, and the derivative differs per atom:
+     *
+     *     dE/dq_A = phi_grad(A) - phi_pot(A) + V_img[q_grad](A) - V_img[q](A)   (A not a link atom)
+     *     dE/dq_L = c * sum_A q_grad(A) * phi_unit(A) - phi_pot(L) - V_img[q](L)
+     *
+     *   where phi_unit is the potential of a unit charge on every receiver, from
+     *   receiver_potential(). The sum over the receivers of the potential of the QM charges
+     *   is rewritten that way with the symmetry of the interaction, so that one extra
+     *   evaluation per molecule replaces a sum over all of the receivers.
+     */
+    if (dVout != nullptr)
+    {
+        dVout->assign(n, 0.);
+        if (gradChargesQM.empty())
+        {
+            for (int j = 0; j < n; j++)
+            {
+                (*dVout)[j] = phiGrad[j] - phiPot[j];
+            }
+        }
+        else
+        {
+            if (laMoleculeOfQmAtom.empty())
+            {
+                laMoleculeOfQmAtom.assign(n, -1);
+                for (size_t m = 0; m < gradLaMolecules.size(); m++)
+                {
+                    for (int j : gradLaMolecules[m].linkAtomsOfQmList)
+                    {
+                        laMoleculeOfQmAtom[j] = static_cast<int>(m);
+                    }
+                }
+            }
+            std::vector<double> psi(gradLaMolecules.size(), 0.);
+            std::vector<real>   phiUnit(n);
+            for (size_t m = 0; m < gradLaMolecules.size(); m++)
+            {
+                receiver_potential(static_cast<int>(m), cr, nrnb, wcycle, pmedata, variant,
+                                   phiUnit.data());
+                double sum = 0.;
+                for (int j = 0; j < n; j++)
+                {
+                    sum += static_cast<double>(gradChargeQM(j)) * static_cast<double>(phiUnit[j]);
+                }
+                psi[m] = sum * static_cast<double>(mm[0].scalefactor)
+                         / static_cast<double>(gradLaMolecules[m].receivers.size());
+            }
+            for (int j = 0; j < n; j++)
+            {
+                const double vImgPot  = imgPot.empty() ? 0. : imgPot[j];
+                const double vImgGrad = imgGrad.empty() ? 0. : imgGrad[j];
+                const int    mol      = laMoleculeOfQmAtom[j];
+                (*dVout)[j] = (mol < 0) ? (phiGrad[j] - phiPot[j]) + (vImgGrad - vImgPot)
+                                        : psi[mol] - phiPot[j] - vImgPot;
+            }
         }
     }
 
     return eGrad - ePot;
 } // energy_correction
+
+/* Periodic image of x nearest to the reference position ref (rectangular box, as
+ * everywhere in this file). */
+static void qmmmNearestImage(const matrix box, const rvec ref, const rvec x, rvec image)
+{
+    for (int d = 0; d < DIM; d++)
+    {
+        const real L  = box[d][d];
+        real       dx = x[d] - ref[d];
+        if (L > 0)
+        {
+            dx -= L * std::round(dx / L);
+        }
+        image[d] = ref[d] + dx;
+    }
+}
+
+/* w += x (x) f */
+static void qmmmAddOuter(matrix w, const rvec x, const rvec f)
+{
+    for (int a = 0; a < DIM; a++)
+    {
+        for (int b = 0; b < DIM; b++)
+        {
+            w[a][b] += x[a] * f[b];
+        }
+    }
+}
 
 void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
                               t_nrnb*           nrnb,
@@ -1246,17 +1403,55 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
       gmx::StepWorkload stepWork;
       stepWork.computeForces = true;
       std::vector<real> emptyVec;
+      /* The exact reciprocal-space virial, when this step needs one: the virial of the grid
+       * energy of all of the charges here, minus that of the MM charges alone (below), is the
+       * virial of the reciprocal-space QM--MM and QM--QM-image energy. It replaces the single
+       * sum x (x) F of the reciprocal-space forces, which is not the virial of an Ewald sum.
+       */
+      const bool wantVirial = virialCorrection && computeVirial;
+      matrix recipVirAll, recipVirMM, recipSingleSum;
+      clear_mat(recipVirAll);
+      clear_mat(recipVirMM);
+      clear_mat(recipSingleSum);
+      real recipEnergy = 0, recipDvdl = 0;
+      stepWork.computeVirial = wantVirial;
+      stepWork.computeEnergy = wantVirial;
       gmx_pme_do(pmedata, pme_full.x, pme_full.f, pme_full.q.data(), pme_full.q.data(),
                  nullptr, nullptr, nullptr, nullptr, qm_.box, cr, 0, 0, nrnb, // pme_full.nrnb->get(),
-                 wcycle, pme_full.vir, pme_full.vir, nullptr, nullptr, 0., 0., nullptr, nullptr,
+                 wcycle, recipVirAll, recipVirAll, &recipEnergy, &recipEnergy, 0., 0., &recipDvdl, &recipDvdl,
                  stepWork, TRUE, FALSE, n, nullptr); // emptyVec);
-    //clock_gettime(CLOCK_MONOTONIC, &time2);
-    //print_time_difference("PMETIME 3 ", time1, time2);
+      stepWork.computeVirial = false;
+      stepWork.computeEnergy = false;
       for (int j=0; j<n; j++)
       {
         for (int m=0; m<DIM; m++)
         {
           grad_add[j][m] = - pme_full.f[j][m] / HARTREE_BOHR2MD; // partgrad is gradient, i.e. the negative of force
+        }
+      }
+      if (wantVirial)
+      {
+        rvec image;
+        for (int j=0; j<n; j++)
+        {
+          qmmmNearestImage(qm_.box, qm_.xQM[0], qm_.xQM[j], image);
+          qmmmAddOuter(recipSingleSum, image, pme_full.f[j]);
+        }
+        // the grid virial of the MM charges alone, which is not part of the QM/MM energy
+        for (int j=0; j<n; j++)
+        {
+          pme_full.q[j] = 0.;
+        }
+        gmx::StepWorkload stepWorkMM;
+        stepWorkMM.computeVirial = true;
+        stepWorkMM.computeEnergy = true;
+        gmx_pme_do(pmedata, pme_full.x, pme_full.f, pme_full.q.data(), pme_full.q.data(),
+                   nullptr, nullptr, nullptr, nullptr, qm_.box, cr, 0, 0, nrnb,
+                   wcycle, recipVirMM, recipVirMM, &recipEnergy, &recipEnergy, 0., 0., &recipDvdl, &recipDvdl,
+                   stepWorkMM, TRUE, FALSE, n, nullptr);
+        for (int j=0; j<n; j++)
+        {
+          pme_full.q[j] = qQM[j];
         }
       }
    // printf("================================\n");
@@ -1403,6 +1598,27 @@ void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
           MMgrad_full[j][YY] = - qMMfull[j] * pme_full.f[n + j][YY] / HARTREE_BOHR2MD;
           MMgrad_full[j][ZZ] = - qMMfull[j] * pme_full.f[n + j][ZZ] / HARTREE_BOHR2MD;
       } // svmul(- mm_.MMcharges_full[j] / HARTREE_BOHR2MD, pme->f[n + j], mm_.grad_full[j]);
+
+      if (wantVirial)
+      {
+        rvec image, force;
+        for (int j=0; j<ne_full; j++)
+        {
+          qmmmNearestImage(qm_.box, qm_.xQM[0], mm_.xMM_full[j], image);
+          svmul(qMMfull[j], pme_full.f[n + j], force);
+          qmmmAddOuter(recipSingleSum, image, force);
+        }
+        /* what calculate_QMMM() has to add on top of its single sum:
+         *   (exact reciprocal virial) - (the single sum of the reciprocal forces) */
+        for (int a=0; a<DIM; a++)
+        {
+          for (int b=0; b<DIM; b++)
+          {
+            recipVirialCorrection[a][b] = recipVirAll[a][b] - recipVirMM[a][b]
+                                          + 0.5 * recipSingleSum[a][b];
+          }
+        }
+      }
    // printf("================================\n");
    // for (int i=0; i<ne_full; i++)
    // {

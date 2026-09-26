@@ -1257,6 +1257,28 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
             gmx_fatal(FARGS, "GMX_QMMM_RESPONSE must be on or off, but it is '%s'.", env);
         }
     }
+    /* The QM/MM forces supply their own virial (GMX_QMMM_VIRIAL=on|off). Switching it off
+     *   reproduces the behaviour of the code before it existed: the QM/MM forces then
+     *   contribute nothing to the virial, and the pressure of a QM/MM run is wrong.
+     */
+    virialCorrection = true;
+    if ((env = getenv("GMX_QMMM_VIRIAL")) != nullptr)
+    {
+        if (gmx_strcasecmp(env, "on") == 0 || gmx_strcasecmp(env, "yes") == 0
+            || gmx_strcasecmp(env, "true") == 0 || std::strcmp(env, "1") == 0)
+        {
+            virialCorrection = true;
+        }
+        else if (gmx_strcasecmp(env, "off") == 0 || gmx_strcasecmp(env, "no") == 0
+                 || gmx_strcasecmp(env, "false") == 0 || std::strcmp(env, "0") == 0)
+        {
+            virialCorrection = false;
+        }
+        else
+        {
+            gmx_fatal(FARGS, "GMX_QMMM_VIRIAL must be on or off, but it is '%s'.", env);
+        }
+    }
     if ((env = getenv("GMX_QMMM_RESPONSE_EPS")) != nullptr)
     {
         char*        end = nullptr;
@@ -1273,17 +1295,6 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
                   "GMX_QMMM_RESPONSE is on while GMX_QMMM_ENERGY_CORRECTION is off. The two "
                   "belong to one model: the response correction makes the forces the gradient "
                   "of the energy that the energy correction reports. Switch both on or both off.");
-    }
-    if (responseCorrection && gradLa == GradLa::Exclude)
-    {
-        fprintf(stdout,
-                "\nNOTE: the response correction of the forces is not available with "
-                "GMX_QMMM_GRAD_LA=exclude and\n  has been switched off. The link-atom charge is "
-                "then spread over the MM atoms, so the QM--MM\n  interaction is not linear in "
-                "the Mulliken charges and the difference of the two potentials\n  is not the "
-                "perturbation that gives the response. The forces of this run are therefore not\n"
-                "  the gradient of the reported energy.\n\n");
-        responseCorrection = false;
     }
 
     // ---- topology ----
@@ -1872,6 +1883,15 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
                 "  difference -- two extra DFTB+ calculations per step whenever the rules of the\n"
                 "  potential and of the gradient differ. Use a tight SCCTolerance, 1e-8 or below.\n",
                 responseEps);
+        if (gradLa == GradLa::Exclude)
+        {
+            fprintf(stdout,
+                    "  With GMX_QMMM_GRAD_LA=exclude the charge of a link atom is spread over the MM\n"
+                    "  atoms, so the QM--MM interaction is quadratic in the Mulliken charges and the\n"
+                    "  perturbation of a link atom differs from that of the other QM atoms. It needs\n"
+                    "  the potential of a unit charge on every receiver, i.e. one more evaluation of\n"
+                    "  the electrostatics per molecule with link atoms and per step.\n");
+        }
     }
     else
     {
@@ -2343,6 +2363,8 @@ real QMMM_rec::calculate_QMMM(const t_commrec*      cr,
      // snew(fshift, (qm_.nrQMatoms + mm_.nrMMatoms));
     }
 
+    computeVirial = forceWithVirial->computeVirial_;
+    clear_mat(recipVirialCorrection);
     QMener = call_QMroutine(cr, this, qm_, mm_, forces, fshift, nrnb, wcycle);
 
     if (GMX_QMMM_DFTBPLUS)
@@ -2397,6 +2419,64 @@ real QMMM_rec::calculate_QMMM(const t_commrec*      cr,
              // fshiftMM[mm_->shiftMM[i]][j] += fshift[qm_->nrQMatoms+i][j];
             }
         }
+    }
+
+    /* Virial of the QM/MM forces. They are collected in a buffer of their own (see
+     * init_forcerec(), which now marks a QM/MM run as having direct virial contributions),
+     * so the single sum over the shift forces does not see them and the virial has to be
+     * supplied here. Every force is paired with the position it was computed from: the QM
+     * and MM atoms are taken as the periodic images nearest to the first QM atom, which is
+     * what the minimum-image QM--MM terms and the contiguous QM cluster of DFTB+ use. That
+     * is exact for everything computed in real space; the reciprocal-space part of PME is
+     * replaced by its exact virial, which gradient_QM_MM() has prepared.
+     * Rectangular boxes only, like the rest of this interface.
+     */
+    if (GMX_QMMM_DFTBPLUS && virialCorrection && forceWithVirial->computeVirial_)
+    {
+        const auto nearestImage = [qm_](const rvec x, rvec image) {
+            for (int d = 0; d < DIM; d++)
+            {
+                const real L  = qm_->box[d][d];
+                real       dx = x[d] - qm_->xQM[0][d];
+                if (L > 0)
+                {
+                    dx -= L * std::round(dx / L);
+                }
+                image[d] = qm_->xQM[0][d] + dx;
+            }
+        };
+        const auto addTerm = [](matrix w, const rvec x, const rvec gradient) {
+            // the force is minus the stored gradient
+            for (int a = 0; a < DIM; a++)
+            {
+                for (int b = 0; b < DIM; b++)
+                {
+                    w[a][b] -= x[a] * gradient[b];
+                }
+            }
+        };
+        matrix w;
+        clear_mat(w);
+        rvec   image;
+        for (int i = 0; i < qm_->nrQMatoms; i++)
+        {
+            nearestImage(qm_->xQM[i], image);
+            addTerm(w, image, forces[i]);
+        }
+        for (int i = 0; i < mm_->nrMMatoms; i++)
+        {
+            nearestImage(mm_->xMM[i].as_vec(), image);
+            addTerm(w, image, forces[qm_->nrQMatoms + i]);
+        }
+        for (int i = 0; i < mm_->nrMMatoms_full; i++)
+        {
+            nearestImage(mm_->xMM_full[i].as_vec(), image);
+            addTerm(w, image, forces[qm_->nrQMatoms + mm_->nrMMatoms + i]);
+        }
+        matrix virial;
+        msmul(w, -0.5, virial);
+        m_add(virial, recipVirialCorrection, virial);
+        forceWithVirial->addVirialContribution(virial);
     }
 
     sfree(forces);

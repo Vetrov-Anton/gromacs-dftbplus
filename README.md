@@ -20,11 +20,14 @@ PLUMED and a configurable treatment of the QM/MM boundary:
    energy is rebuilt with the rules of the gradient, and the forces get the response of the
    Mulliken charges to the difference of the two potentials, so that the forces are the
    gradient of the reported energy.
-4. **Boundary treatment in grompp** — which bonded terms at the boundary are removed, and the
+4. **Virial of the QM/MM forces** — the QM/MM forces contribute their own virial, exactly in
+   real space and through the Ewald virial in the reciprocal space, so the pressure of a QM/MM
+   run is right.
+5. **Boundary treatment in grompp** — which bonded terms at the boundary are removed, and the
    QM–MM Lennard-Jones by the exclusion rules of the force field. Restraints are always kept.
-5. **Reports** — `grompp` and `mdrun` write, atom by atom, every term removed from the
+6. **Reports** — `grompp` and `mdrun` write, atom by atom, every term removed from the
    topology and every QM–MM pair removed or scaled in the electrostatics.
-6. **Diagnostic output** — the potential on the QM atoms and the QM/MM gradients, split into
+7. **Diagnostic output** — the potential on the QM atoms and the QM/MM gradients, split into
    their contributions, for checking against an independent calculation.
 
 Everything is set by environment variables; there is no `.mdp` option and no `tpr` format
@@ -315,11 +318,22 @@ density; `ε` is a fraction of `dV`, so the perturbation itself is tiny.
 dominates the difference. `GMX_QMMM_RESPONSE=on` together with `GMX_QMMM_ENERGY_CORRECTION=off` is
 a fatal error: the two are one model.
 
-**Not available with `GMX_QMMM_GRAD_LA=exclude`.** There the link-atom charge is spread over the
-MM atoms, so both charge sets depend on the Mulliken charges, the QM–MM interaction is no longer
-linear in them, and the difference of the two potentials is not the perturbation that gives the
-response. mdrun prints a `NOTE` and switches the correction off; the forces of such a run are not
-the gradient of the reported energy.
+**With `GMX_QMMM_GRAD_LA=exclude` the perturbation is not that difference.** The charge of a link
+atom L is zero in the gradient and is spread over the receivers of its molecule, `q_k += c·q_L`
+with `c = scalefactor / (number of receivers)`, so both charge sets depend on the Mulliken
+charges, the QM–MM term is quadratic in them, and `dE/dq` differs per atom:
+
+```
+dE/dq_A = φ_grad(A) − φ_pot(A) + V_img[q_grad](A) − V_img[q](A)      (A not a link atom)
+dE/dq_L = c · Σ_A q_grad(A) · φ_unit(A) − φ_pot(L) − V_img[q](L)
+```
+
+`φ_unit` is the potential of a unit charge on every receiver, with the exclusions of the
+gradient. It replaces a sum over all of the receivers of the potential of the QM charges, by the
+symmetry of the interaction, so one extra evaluation of the electrostatics per molecule with link
+atoms and per step is enough — the reciprocal-space part of it is one more PME call. `φ_unit` is
+purely geometric and carries no Mulliken charges. Everything after that is the same finite
+difference.
 
 ```
 QM/MM energy: the QM--MM electrostatics of the reported energy follows the rules of the gradient
@@ -357,16 +371,81 @@ slope over 10 ps stretches, and the RMS is the scatter about the fit:
 | `none`, `GRAD_EXCL=0` (rules coincide) | 69.7 | 77 ± 4 | 0.174 | 1.52 |
 | `CS`, `GRAD_EXCL=3`, response **on** | 57.1 | 66 ± 15 | 0.196 | 0.85 |
 | `RCD`, `GRAD_EXCL=3`, response **on** | 77.0 | 72 ± 14 | 0.189 | 0.85 |
+| `CS`, `GRAD_EXCL=3`, `GRAD_LA=exclude`, response **on** | 64.5 | 60 ± 13 | 0.183 | 0.96 |
 | `CS`, `GRAD_EXCL=3`, response **off** | 560.5 | 969 ± 897 | 7.677 | 1.51 |
+| `CS`, `GRAD_EXCL=3`, `GRAD_LA=exclude`, response **off** | 1477.4 | 1725 ± 1067 | 9.289 | 1.68 |
+
+The mismatch of the forces with `GRAD_LA=exclude` is 123 / 309 / −113 kJ mol⁻¹ nm⁻¹ without the
+response and −0.007 / 0.013 / −0.005 with it, the same check as above.
 
 With the response a boundary charge scheme combined with the exclusions of the gradient conserves
-energy as well as matched rules do. Without it the same run drifts ten times faster, its scatter
+energy as well as matched rules do, with the link atoms kept in the gradient or excluded from it. Without it the same run drifts ten times faster, its scatter
 is forty times larger, and the block slopes vary by as much as their mean — the energy wanders
 rather than drifts. The price is the last column: 1.8 times slower.
 
 ---
 
-## 4. Topology at the boundary (grompp)
+## 4. Virial of the QM/MM forces: `GMX_QMMM_VIRIAL` (mdrun)
+
+The QM/MM forces are added to a buffer of their own, which the single sum over the shift forces
+does not see, so without a contribution of their own they are simply missing from the virial and
+the pressure of a QM/MM run is wrong. `init_forcerec()` now marks a QM/MM run as having direct
+virial contributions, and `QMMM_rec::calculate_QMMM()` supplies the tensor.
+
+Every force is paired with the position it was computed from: the QM and MM atoms are taken as
+the periodic images nearest to the first QM atom, which is what the minimum-image QM–MM terms
+and the contiguous QM cluster of DFTB+ use. That gives the exact virial of everything computed
+in real space. The reciprocal-space part of PME is different — the single sum `x ⊗ F` of
+reciprocal-space forces is not the virial of an Ewald sum — so `gradient_QM_MM()` asks PME for
+the virial of the grid energy of all of the charges, subtracts the virial of the MM charges
+alone, which is not part of the QM/MM energy, and passes the difference on. With the response
+correction the same difference is taken for the two perturbed calculations and differentiated,
+because the response has forces of its own.
+
+| value | effect |
+|---|---|
+| `on` (default) | the QM/MM forces contribute their virial |
+| `off` | they do not, which reproduces the behaviour of the code before this existed |
+
+**Extra work.** Only on the steps where GROMACS asks for the virial — `nstcalcenergy`, or every
+`nstpcouple` step with a barostat — and only with PME, where it is one more PME call, plus two
+more when the response correction runs. Elsewhere it costs nothing: the real-space part is a
+sum over forces that are there anyway. Rectangular boxes only, like the rest of this interface.
+
+### Verification and cost
+
+The check is `dU/dε = 2·tr(Ξ)` under isotropic scaling of the box, by finite difference of the
+total potential energy against the trace of the virial in the energy file. On a solvated
+dipeptide with one link atom (`dU/dε` around −1.1·10⁵ kJ/mol):
+
+| setup | `dU/dε` − 2·tr(Ξ) | as a pressure |
+|---|---|---|
+| `none`, `GRAD_EXCL=0` (rules coincide) | −1.7 | 0.3 bar |
+| `CS`, `GRAD_EXCL=3`, response on | −4.9 | 0.9 bar |
+| `CS`, `GRAD_EXCL=3`, `GRAD_LA=exclude`, response on | −5.1 | 0.9 bar |
+| `CS`, `GRAD_EXCL=3`, reaction field | 0.2 | 0.0 bar |
+| the same with `GMX_QMMM_VIRIAL=off` | −814.2 | **141 bar** |
+
+So the QM/MM forces were missing about 140 bar of pressure from that system, and what is left
+with the correction is the noise of the finite difference. The reaction-field row has no
+reciprocal space and comes out exact.
+
+Measured cost on the same tripeptide as above (2000 steps, `nstcalcenergy` as given):
+
+| | virial off | virial on |
+|---|---|---|
+| response off, `nstcalcenergy = 1` | 2.43 ns/day | 1.88 ns/day |
+| response off, `nstcalcenergy = 100` | — | 2.81 ns/day |
+| response on, `nstcalcenergy = 1` | 0.97 ns/day | 0.96 ns/day |
+| response on, `nstcalcenergy = 100` | — | 1.03 ns/day |
+
+The virial costs 23 % when it is asked for at every step and nothing else is running, 1 % when
+the response correction is on — the extra PME calls disappear next to the extra SCC ones — and
+effectively nothing at a realistic `nstcalcenergy`.
+
+---
+
+## 5. Topology at the boundary (grompp)
 
 ### `GMX_QMMM_BONDED_SCHEME`
 
@@ -411,7 +490,7 @@ atoms are always removed.
 
 ---
 
-## 5. Reports
+## 6. Reports
 
 | file | written by | content |
 |---|---|---|
@@ -424,7 +503,7 @@ file names can be changed with `GMX_QMMM_TOPOLOGY_REPORT` and `GMX_QMMM_EXCLUSIO
 
 ---
 
-## 6. QM/MM electrostatics variant
+## 7. QM/MM electrostatics variant
 
 | variable | meaning |
 |---|---|
@@ -435,11 +514,11 @@ file names can be changed with `GMX_QMMM_TOPOLOGY_REPORT` and `GMX_QMMM_EXCLUSIO
 | `GMX_QMMM_VARIANT=4` | shifted cut-off |
 | `GMX_QMMM_PME_DIPCOR` | dipole (surface) correction for PME — disabled: with `GMX_QMMM_VARIANT=1` mdrun prints why and exits; with any other variant it is ignored |
 
-All boundary schemes of sections 1–3 work with every variant.
+All boundary schemes of sections 1–4 work with every variant.
 
 ---
 
-## 7. DFTB output files (mdrun)
+## 8. DFTB output files (mdrun)
 
 Each of the following is set to an **integer stride in steps**; the file is opened in append
 mode in the run directory on step 0 and written every *N* steps. Unset means no file. The
@@ -520,6 +599,7 @@ gradient is the sum of the two entries.
 | `GMX_QMMM_ENERGY_CORRECTION` | mdrun | `on`, `off` | `on` | — |
 | `GMX_QMMM_RESPONSE` | mdrun | `on`, `off` | `on` | — |
 | `GMX_QMMM_RESPONSE_EPS` | mdrun | float > 0 | `1e-3` | — |
+| `GMX_QMMM_VIRIAL` | mdrun | `on`, `off` | `on` | — |
 | `GMX_QMMM_REPORTS` | grompp, mdrun | `off`, `0`, `no`, `false` | on | — |
 | `GMX_QMMM_TOPOLOGY_REPORT` | grompp | file name | `qmmm_topology_report.txt` | — |
 | `GMX_QMMM_EXCLUSION_REPORT` | mdrun | file name | `qmmm_exclusion_report.txt` | — |
@@ -536,8 +616,8 @@ gradient is the sum of the two entries.
 
 An unknown value of `GMX_QMMM_BONDED_SCHEME`, `GMX_QMMM_LJ_SCHEME`, `GMX_QMMM_POT_SCHEME`,
 `GMX_QMMM_GRAD_EXCL`, `GMX_QMMM_GRAD_LA`, `GMX_QMMM_FUDGE_QQ`, `GMX_QMMM_ENERGY_CORRECTION`,
-`GMX_QMMM_RESPONSE` or `GMX_QMMM_RESPONSE_EPS` is a fatal error, and so is `GMX_QMMM_RESPONSE=on`
-with `GMX_QMMM_ENERGY_CORRECTION=off`.
+`GMX_QMMM_RESPONSE`, `GMX_QMMM_RESPONSE_EPS` or `GMX_QMMM_VIRIAL` is a fatal error, and so is
+`GMX_QMMM_RESPONSE=on` with `GMX_QMMM_ENERGY_CORRECTION=off`.
 
 ---
 

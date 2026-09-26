@@ -354,11 +354,10 @@ void init_dftbplus(QMMM_QMrec*       qm,
  *   give it by central difference. The perturbation eps*dV is tiny, so the difference stays
  *   in the linear regime; a tight SCCTolerance is required, or its noise dominates.
  *
- * Only valid while the charge set of the gradient is the Mulliken set, i.e. not with
- *   GMX_QMMM_GRAD_LA=exclude; there the link-atom charge is spread over the MM atoms, the
- *   interaction stops being linear in the Mulliken charges, and the difference of the two
- *   potentials is no longer the perturbation that gives the response. init_QMMM_exclusions()
- *   switches the correction off in that case, and energy_correction() then returns no dV.
+ * The perturbation dV is dE/dq at the SCC solution, which energy_correction() supplies. It is
+ *   the plain difference of the two potentials with the usual charge sets, and something less
+ *   symmetric with GMX_QMMM_GRAD_LA=exclude, where the interaction is quadratic in the
+ *   Mulliken charges; the finite-difference machinery below does not care which.
  */
 static void response_correction(QMMM_rec*                  qr,
                                 QMMM_QMrec*                qm,
@@ -396,6 +395,13 @@ static void response_correction(QMMM_rec*                  qr,
     rvec*               partPert[2];
     rvec*               mmPert[2];
     rvec*               mmFullPert[2];
+    /* The reciprocal-space virial correction of this step, and the one of each perturbed
+     * calculation: the response contributes to the virial through its own forces, whose
+     * reciprocal-space part needs the same treatment, and the derivative with respect to
+     * the perturbation gives it by the same central difference.
+     */
+    matrix recipVirStep, recipVirPert[2];
+    copy_mat(qr->recipVirialCorrection, recipVirStep);
 
     for (int p = 0; p < 2; p++)
     {
@@ -427,6 +433,7 @@ static void response_correction(QMMM_rec*                  qr,
         }
         qr->gradient_QM_MM(cr, nrnb, wcycle, (variant == eqmmmPME ? *qr->pmedata : nullptr),
                            variant, partPert[p], mmPert[p], mmFullPert[p], true);
+        copy_mat(qr->recipVirialCorrection, recipVirPert[p]);
     }
 
     const double inv2eps = 1. / (2. * eps);
@@ -452,6 +459,18 @@ static void response_correction(QMMM_rec*                  qr,
             MMgrad_full[k][m] += (real)((mmFullPert[0][k][m] - mmFullPert[1][k][m]) * inv2eps);
         }
     }
+
+    if (qr->virialCorrection && qr->computeVirial)
+    {
+        for (int a = 0; a < DIM; a++)
+        {
+            for (int b = 0; b < DIM; b++)
+            {
+                recipVirStep[a][b] += (recipVirPert[0][a][b] - recipVirPert[1][a][b]) * inv2eps;
+            }
+        }
+    }
+    copy_mat(recipVirStep, qr->recipVirialCorrection);
 
     for (int p = 0; p < 2; p++)
     {
@@ -732,7 +751,8 @@ real call_dftbplus(QMMM_rec*         qr,
     }
 
     std::vector<double> dV;
-    const double eCorr = qr->energy_correction(cr, nrnb, wcycle, pmeOrNull, variant, &dV);
+    const double        eCorr = qr->energy_correction(cr, nrnb, wcycle, pmeOrNull, variant,
+                                               qr->responseCorrection ? &dV : nullptr);
     QMener += eCorr;
     if (f_energy_corr && step % output_freq_energy_corr == 0)
     {

@@ -1174,7 +1174,9 @@ void init_forcerec(FILE*                            fp,
     const bool haveDirectVirialContributionsFast =
             fr->forceProviders->hasForceProvider() || gmx_mtop_ftype_count(mtop, F_POSRES) > 0
             || gmx_mtop_ftype_count(mtop, F_FBPOSRES) > 0 || ir->nwall > 0 || ir->bPull || ir->bRot
-            || ir->bIMD;
+            || ir->bIMD
+            // the QM/MM forces come with their own virial, see QMMM_rec::calculate_QMMM()
+            || ir->bQMMM;
     const bool haveDirectVirialContributionsSlow = EEL_FULL(ic->eeltype) || EVDW_PME(ic->vdwtype);
     for (int i = 0; i < (fr->useMts ? 2 : 1); i++)
     {
