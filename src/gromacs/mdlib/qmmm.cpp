@@ -1169,6 +1169,29 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
         gradFudgeQQ = static_cast<real>(f);
     }
 
+    // The reported QM energy follows the rules of the gradient rather than those of the
+    //   Hamiltonian; switched off with GMX_QMMM_ENERGY_CORRECTION=off, which reproduces the
+    //   energy of the earlier code exactly.
+    energyCorrection = true;
+    if ((env = getenv("GMX_QMMM_ENERGY_CORRECTION")) != nullptr)
+    {
+        if (gmx_strcasecmp(env, "on") == 0 || gmx_strcasecmp(env, "yes") == 0
+            || gmx_strcasecmp(env, "true") == 0 || std::strcmp(env, "1") == 0)
+        {
+            energyCorrection = true;
+        }
+        else if (gmx_strcasecmp(env, "off") == 0 || gmx_strcasecmp(env, "no") == 0
+                 || gmx_strcasecmp(env, "false") == 0 || std::strcmp(env, "0") == 0)
+        {
+            energyCorrection = false;
+        }
+        else
+        {
+            gmx_fatal(FARGS,
+                      "GMX_QMMM_ENERGY_CORRECTION must be on or off, but it is '%s'.", env);
+        }
+    }
+
     gradLa = GradLa::MM1;
     if ((env = getenv("GMX_QMMM_GRAD_LA")) != nullptr)
     {
@@ -1752,6 +1775,10 @@ void QMMM_rec::init_QMMM_exclusions(const gmx_mtop_t* mtop, const t_forcerec* fr
             "GMX_QMMM_FUDGE_QQ = %g;\n  %zu link atoms, GMX_QMMM_GRAD_LA = %s.\n",
             gradBonded ? "BONDED" : gmx::formatString("%d", gradExcl).c_str(), nExcluded, nScaled,
             gradFudgeQQ, linkAtoms.size(), gradLaName(gradLa));
+    fprintf(stdout,
+            "QM/MM energy: the QM--MM electrostatics of the reported energy follows the rules of the %s\n"
+            "  (GMX_QMMM_ENERGY_CORRECTION = %s).\n",
+            energyCorrection ? "gradient" : "QM Hamiltonian", energyCorrection ? "on" : "off");
 
     // Detailed report, atom by atom, in a separate file.
     if ((cr == nullptr || MASTER(cr)) && qmmmReportsEnabled())

@@ -126,7 +126,8 @@ static inline real pbc_dist_qmmm(matrix box, const rvec x1, const rvec x2)
  ****************************************/
 
 void QMMM_rec::calculate_SR_QM_MM(int variant,
-                                  real *pot)
+                                  real *pot,
+                                  bool gradientRules)
 {
   /* as the last argument is expected: fr->ewaldcoeff_q */
   QMMM_QMrec& qm_ = qm[0];
@@ -137,6 +138,17 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
   //   of the MM1 atoms spread over the other MM atoms of their molecule (prepared with the
   //   short-range list); the MM1 atoms themselves are zeroed by qmmmScaleFactorPot()
   const real* qPot = potChargesSR.empty() ? mm_.MMcharges.data() : potChargesSR.data();
+  /* energy_correction() asks for the same potential built with the rules of the gradient:
+   *   the charges that the gradient uses (the link atoms of GMX_QMMM_GRAD_LA=exclude are then
+   *   already spread over the MM atoms) and the factors of GMX_QMMM_GRAD_EXCL; the fictitious
+   *   point charges of the boundary scheme belong to the Hamiltonian only and are left out. */
+  if (gradientRules)
+  {
+      qPot = gradChargesMM.empty() ? mm_.MMcharges.data() : gradChargesMM.data();
+  }
+  const auto scaleOf = [this, gradientRules](int j, int k) {
+      return gradientRules ? mm[0].qmmmScaleFactorGrad(j, k) : mm[0].qmmmScaleFactorPot(j, k);
+  };
 
   switch (variant) {
 
@@ -164,7 +176,7 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
         // charge zeroed if this is an MM1 atom of the boundary charge scheme
-        const real qMM = qPot[k] * mm_.qmmmScaleFactorPot(j, k);
+        const real qMM = qPot[k] * scaleOf(j, k);
         if (qMM == 0.) {
           continue;
         }
@@ -198,7 +210,7 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
         // charge zeroed if this is an MM1 atom of the boundary charge scheme
-        const real qMM = qPot[k] * mm_.qmmmScaleFactorPot(j, k);
+        const real qMM = qPot[k] * scaleOf(j, k);
         if (qMM == 0.) {
           continue;
         }
@@ -226,7 +238,7 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
       // add potential from MM atoms
       for (int k=0; k<mm_.nrMMatoms; k++) {
         // charge zeroed if this is an MM1 atom of the boundary charge scheme
-        const real qMM = qPot[k] * mm_.qmmmScaleFactorPot(j, k);
+        const real qMM = qPot[k] * scaleOf(j, k);
         if (qMM == 0.) {
           continue;
         }
@@ -258,7 +270,7 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
          *     is subtracted here as the pair term erf(beta*r)/r.
          * The sum of the two reproduces s/r for the pair, as it should.
          */
-        const real s = mm_.qmmmScaleFactorPot(j, k);
+        const real s = scaleOf(j, k);
         const real qk = qPot[k]; // the same charge as on the grid of calculate_LR_QM_MM()
         real r = pbc_dist_qmmm(qm_.box, qm_.xQM[j], mm_.xMM[k]);
         if (r < 0.001) { // this may occur on the first step of simulation for link atom(s)
@@ -282,7 +294,7 @@ void QMMM_rec::calculate_SR_QM_MM(int variant,
   } // switch variant
 
   /* The fictitious charges of the boundary charge scheme, if any. */
-  if (variant != eqmmmVACUO)
+  if (variant != eqmmmVACUO && !gradientRules)
   {
       add_boundary_scheme_potential(variant, pot);
   }
@@ -385,7 +397,8 @@ void QMMM_rec::calculate_LR_QM_MM(const t_commrec *cr,
                                   t_nrnb *nrnb,
                                   gmx_wallcycle_t wcycle,
                                   struct gmx_pme_t *pmedata,
-                                  real *pot)
+                                  real *pot,
+                                  bool gradientRules)
 {
   QMMM_QMrec& qm_      = qm[0];
   QMMM_MMrec& mm_      = mm[0];
@@ -428,10 +441,11 @@ void QMMM_rec::calculate_LR_QM_MM(const t_commrec *cr,
       pme_full.x[n + j][XX] = mm_.xMM_full[j][XX];
       pme_full.x[n + j][YY] = mm_.xMM_full[j][YY];
       pme_full.x[n + j][ZZ] = mm_.xMM_full[j][ZZ];
-      pme_full.q[n + j]     = mm_.MMcharges_full[j];
+      pme_full.q[n + j]     = gradientRules ? gradChargeMMfull(j) : mm_.MMcharges_full[j];
    // printf("MM %5d %8.5f %8.5f %8.5f %8.5f\n", j+1, pme->x[n+j][XX], pme->x[n+j][YY], pme->x[n+j][ZZ], pme->q[n + j]);
   }
-  if (!potShiftFull.empty())
+  /* the AMBER shift belongs to the Hamiltonian only, so the rules of the gradient skip it */
+  if (!potShiftFull.empty() && !gradientRules)
   {
       for (int j=0; j<ne; j++)
       {
@@ -645,7 +659,8 @@ void QMMM_rec::calculate_complete_QM_QM(const t_commrec*  cr,
                                         t_nrnb*           nrnb,
                                         gmx_wallcycle_t   wcycle,
                                         struct gmx_pme_t* pmedata,
-                                        real*             pot)
+                                        real*             pot,
+                                        const real*       charges)
 {
   /* as the last arguments are expected: fr->ewaldcoeff_q and fr->pmedata */
   QMMM_QMrec& qm_          = qm[0];
@@ -672,7 +687,7 @@ void QMMM_rec::calculate_complete_QM_QM(const t_commrec*  cr,
        * with the same scaling factor
        * that is applied for the MM atoms.
        */
-      pme_qmonly.q[j]     = qm_.QMcharges[j] * mm_.scalefactor;
+      pme_qmonly.q[j]     = (charges == nullptr ? qm_.QMcharges[j] : charges[j]) * mm_.scalefactor;
   }
   
 //static struct timespec time1, time2;
@@ -747,16 +762,105 @@ void QMMM_rec::calculate_complete_QM_QM(const t_commrec*  cr,
    //         j+1, pme_qmonly.q[j],      pot[j],                 pot_corr[j] * BOHR2NM, pot_surf[j] * BOHR2NM);
   }
 
-  // also, save the potential in the QMMM_QMrec structure
-  for (int j=0; j<n; j++)
+  // also, save the potential in the QMMM_QMrec structure -- but not when this is an extra
+  //   evaluation with another charge set, which must leave the record of the step untouched
+  if (charges == nullptr)
   {
-      qm_.pot_qmqm_set(j, static_cast<double>(pot[j]) * HARTREE_TO_EV); // in volt units
+      for (int j=0; j<n; j++)
+      {
+          qm_.pot_qmqm_set(j, static_cast<double>(pot[j]) * HARTREE_TO_EV); // in volt units
+      }
   }
 } // calculate_complete_QM_QM
 
 /**********************************
  ***  GRADIENTS       *************
  **********************************/
+
+/* The energy of the QM--MM electrostatics under the rules of the gradient
+ *   (GMX_QMMM_ENERGY_CORRECTION=on, the default).
+ *
+ * DFTB+ returns an energy that contains the interaction of the QM charges with the potential
+ *   that went into its Hamiltonian, i.e. built with GMX_QMMM_POT_SCHEME:
+ *
+ *     E(DFTB+) = E_QM[q] + sum_A q_A * phi^pot_A ,
+ *
+ * whereas the forces of gradient_QM_MM() are the derivative, at frozen charges, of
+ *
+ *     sum_A q^grad_A * phi^grad_A ,
+ *
+ *   with the charges and the exclusions of GMX_QMMM_GRAD_EXCL, GMX_QMMM_GRAD_LA and
+ *   GMX_QMMM_FUDGE_QQ. This routine returns the difference of the two, in hartree, so that
+ *   the caller can replace one by the other and report an energy that belongs to the forces.
+ *
+ * With PME the potential of the periodic images of the QM charges is treated the same way:
+ *   it enters the DFTB+ energy with the Mulliken charges and the gradient with the charges of
+ *   the gradient. The two sets differ only with GMX_QMMM_GRAD_LA=exclude; when they are equal
+ *   the image terms cancel exactly and no extra PME evaluation is done. The convention of that
+ *   term (the factor of the image self-interaction) is not touched here, only the charge set.
+ *
+ * Nothing is corrected when the rules of the potential and of the gradient coincide: the two
+ *   sums are then identical term by term, and the result is zero to round-off.
+ */
+double QMMM_rec::energy_correction(const t_commrec*  cr,
+                                   t_nrnb*           nrnb,
+                                   gmx_wallcycle_t   wcycle,
+                                   struct gmx_pme_t* pmedata,
+                                   int               variant)
+{
+    if (!energyCorrection || variant == eqmmmVACUO)
+    {
+        return 0.;
+    }
+    QMMM_QMrec& qm_ = qm[0];
+    const int   n   = qm_.nrQMatoms;
+    energyPotWork.resize(n);
+    energyPotWorkLr.assign(n, real(0.0));
+
+    double eGrad = 0.;
+    double ePot  = 0.;
+
+    // QM--MM with the rules of the gradient
+    calculate_SR_QM_MM(variant, energyPotWork.data(), true);
+    if (variant == eqmmmPME)
+    {
+        calculate_LR_QM_MM(cr, nrnb, wcycle, pmedata, energyPotWorkLr.data(), true);
+    }
+    for (int j = 0; j < n; j++)
+    {
+        eGrad += static_cast<double>(gradChargeQM(j))
+                 * (static_cast<double>(energyPotWork[j]) + static_cast<double>(energyPotWorkLr[j]));
+    }
+
+    // QM--MM with the rules of the Hamiltonian, i.e. what DFTB+ has already counted
+    calculate_SR_QM_MM(variant, energyPotWork.data(), false);
+    if (variant == eqmmmPME)
+    {
+        calculate_LR_QM_MM(cr, nrnb, wcycle, pmedata, energyPotWorkLr.data(), false);
+    }
+    for (int j = 0; j < n; j++)
+    {
+        ePot += static_cast<double>(qm_.QMcharges[j])
+                * (static_cast<double>(energyPotWork[j]) + static_cast<double>(energyPotWorkLr[j]));
+    }
+
+    // periodic images of the QM charges, only when the two charge sets differ
+    if (variant == eqmmmPME && !gradChargesQM.empty())
+    {
+        calculate_complete_QM_QM(cr, nrnb, wcycle, pmedata, energyPotWork.data(), gradChargesQM.data());
+        for (int j = 0; j < n; j++)
+        {
+            eGrad += static_cast<double>(gradChargesQM[j]) * static_cast<double>(energyPotWork[j]);
+        }
+        calculate_complete_QM_QM(cr, nrnb, wcycle, pmedata, energyPotWork.data(), qm_.QMcharges);
+        for (int j = 0; j < n; j++)
+        {
+            ePot += static_cast<double>(qm_.QMcharges[j]) * static_cast<double>(energyPotWork[j]);
+        }
+    }
+
+    return eGrad - ePot;
+} // energy_correction
 
 void QMMM_rec::gradient_QM_MM(const t_commrec*  cr,
                               t_nrnb*           nrnb,

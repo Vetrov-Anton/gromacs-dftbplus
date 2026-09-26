@@ -394,6 +394,23 @@ public:
     //   Called at the beginning of gradient_QM_MM(); does nothing unless GradLa::Exclude.
     void update_gradient_charges(int variant);
 
+    // Energy of the QM--MM electrostatics under the rules of the gradient
+    //   (GMX_QMMM_ENERGY_CORRECTION, on by default). DFTB+ returns an energy that contains
+    //   the interaction of the QM charges with the potential of GMX_QMMM_POT_SCHEME, while the
+    //   forces are the derivative, at frozen charges, of the interaction built with the rules
+    //   of the gradient. With the correction the first term is replaced by the second, so that
+    //   the reported energy and the forces describe the same model.
+    bool energyCorrection = true;
+    // Scratch for energy_correction(), kept between steps to avoid reallocation.
+    std::vector<real> energyPotWork;
+    std::vector<real> energyPotWorkLr;
+    // The correction itself, in hartree; zero when switched off or when the rules coincide.
+    double energy_correction(const t_commrec*  cr,
+                             t_nrnb*           nrnb,
+                             gmx_wallcycle_t   wcycle,
+                             struct gmx_pme_t* pmedata,
+                             int               variant);
+
     // Add the fictitious point charges of the boundary scheme to the potential
     //   on the QM atoms (in e/nm, before the conversion to atomic units).
     void add_boundary_scheme_potential(int variant, real* pot);
@@ -459,20 +476,29 @@ public:
     
     // New routines for QM/MM interactions
     
+    // With gradientRules the potential is built with the charges and the exclusion factors of
+    //   the gradient (GMX_QMMM_GRAD_*) instead of those of GMX_QMMM_POT_SCHEME; used by
+    //   energy_correction(). The default is the potential that goes into the QM Hamiltonian.
     void calculate_SR_QM_MM(int   variant,
-                            real* pot);
+                            real* pot,
+                            bool  gradientRules = false);
     
     void calculate_LR_QM_MM(const t_commrec*  cr,
                             t_nrnb*           nrnb,
                             gmx_wallcycle_t   wcycle,
                             struct gmx_pme_t* pmedata,
-                            real*             pot);
+                            real*             pot,
+                            bool              gradientRules = false);
     
+    // With charges != nullptr the potential of the periodic images is built with that charge
+    //   set instead of the Mulliken charges, and the result is not stored in the QM record;
+    //   energy_correction() needs it with the charges of the gradient.
     void calculate_complete_QM_QM(const t_commrec*  cr,
                                   t_nrnb*           nrnb,
                                   gmx_wallcycle_t   wcycle,
                                   struct gmx_pme_t* pmedata,
-                                  real*             pot);
+                                  real*             pot,
+                                  const real*       charges = nullptr);
     
     void gradient_QM_MM(const t_commrec*  cr,
                         t_nrnb*           nrnb,

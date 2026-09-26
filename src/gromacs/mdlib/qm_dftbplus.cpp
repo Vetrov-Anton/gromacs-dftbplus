@@ -342,6 +342,8 @@ real call_dftbplus(QMMM_rec*         qr,
     static FILE *f_q = nullptr;
     static FILE *f_p = nullptr;
     static FILE *f_p_split = nullptr;
+    static FILE *f_energy_corr = nullptr;
+    static int   output_freq_energy_corr = 0;
     static FILE *f_x_qm = nullptr;
     static FILE *f_x_mm = nullptr;
     static FILE *f_x_mm_full = nullptr;
@@ -408,6 +410,14 @@ real call_dftbplus(QMMM_rec*         qr,
             output_freq_p_split = atoi(env);
             f_p_split = fopen("qm_dftb_esp_split.xvg", "a");
             printf("The MM and the QM-image contributions to the potential on QM atoms will be saved separately in file qm_dftb_esp_split.xvg every %d steps.\n", output_freq_p_split);
+        }
+
+        if ((env = getenv("GMX_DFTB_ENERGY_CORR")) != nullptr && atoi(env) > 0)
+        {
+            output_freq_energy_corr = atoi(env);
+            f_energy_corr = fopen("qm_dftb_energy_corr.xvg", "a");
+            printf("The QM/MM energy correction will be saved in file qm_dftb_energy_corr.xvg every %d steps.\n",
+                   output_freq_energy_corr);
         }
 
         if ((env = getenv("GMX_DFTB_QM_COORD")) != nullptr)
@@ -553,6 +563,23 @@ real call_dftbplus(QMMM_rec*         qr,
     snew(partgrad, qm->nrQMatoms_get());
     qr->gradient_QM_MM(cr, nrnb, wcycle, (qm->qmmm_variant_get() == eqmmmPME ? *qr->pmedata : nullptr),
                    qm->qmmm_variant_get(), partgrad, MMgrad, MMgrad_full);
+
+    /* The energy of DFTB+ contains the QM--MM electrostatics of the QM Hamiltonian
+     * (GMX_QMMM_POT_SCHEME), while the gradient above was built with the rules of
+     * GMX_QMMM_GRAD_*. Unless switched off with GMX_QMMM_ENERGY_CORRECTION=off, replace the
+     * first by the second, so that the reported energy belongs to the reported forces. The
+     * charges of the gradient are the ones update_gradient_charges() has just prepared.
+     */
+    const double eCorr = qr->energy_correction(cr, nrnb, wcycle,
+                                               (qm->qmmm_variant_get() == eqmmmPME ? *qr->pmedata : nullptr),
+                                               qm->qmmm_variant_get());
+    QMener += eCorr;
+    if (f_energy_corr && step % output_freq_energy_corr == 0)
+    {
+        fprintf(f_energy_corr, "%10d %20.10f %20.10f\n", step,
+                eCorr * HARTREE2KJ * AVOGADRO, QMener * HARTREE2KJ * AVOGADRO);
+        fflush(f_energy_corr);
+    }
 
     /* Optionally, write out the gradients while they are still separated.
      * At this point, and in atomic units (hartree/bohr):
