@@ -60,7 +60,7 @@ with `--env VAR=value`:
 | `GMX_QMMM_POT_SCHEME` | `CS` |
 | `GMX_QMMM_GRAD_EXCL` | `3` |
 | `GMX_QMMM_GRAD_LA` | `MM1` |
-| `GMX_QMMM_RESPONSE` | `off` |
+| `GMX_QMMM_RESPONSE` | `on` |
 | `OMP_NUM_THREADS` | `1` |
 
 ```bash
@@ -255,9 +255,9 @@ potential of section 1, while the forces are built with the rules of section 2. 
 sets of rules differ, the reported energy and the reported forces belong to different models.
 Two corrections bring them back together: the first rebuilds the energy, the second supplies the
 term of its gradient that no force term covers. They are one model and share one switch,
-`GMX_QMMM_RESPONSE` (on by default in the code, but preset to `off` in the image, since it
-costs two extra DFTB+ calculations per step — switch it on deliberately); both are identically
-zero when the two sets of rules coincide.
+`GMX_QMMM_RESPONSE` (on by default, in the code and in the image); both are identically
+zero when the two sets of rules coincide. It costs two extra DFTB+ calculations per step and
+needs a tight `SCCTolerance`, 1e-8 or below.
 
 ### The energy
 
@@ -597,7 +597,7 @@ gradient is the sum of the two entries.
 | `GMX_QMMM_GRAD_EXCL` | mdrun | `0`–`3`, `BONDED` | `3` | `3` |
 | `GMX_QMMM_GRAD_LA` | mdrun | `MM1`, `QM1`, `exclude` | `MM1` | `MM1` |
 | `GMX_QMMM_FUDGE_QQ` | mdrun | float | force-field `fudgeQQ` | — |
-| `GMX_QMMM_RESPONSE` | mdrun | `on`, `off` | `on` | `off` |
+| `GMX_QMMM_RESPONSE` | mdrun | `on`, `off` | `on` | `on` |
 | `GMX_QMMM_RESPONSE_EPS` | mdrun | float > 0 | `1e-3` | — |
 | `GMX_QMMM_REPORTS` | grompp, mdrun | `off`, `0`, `no`, `false` | on | — |
 | `GMX_QMMM_TOPOLOGY_REPORT` | grompp | file name | `qmmm_topology_report.txt` | — |
