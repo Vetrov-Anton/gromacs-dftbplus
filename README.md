@@ -1,13 +1,5 @@
 # GROMACS + DFTB+ — QM/MM with separate boundary rules for the QM Hamiltonian and the gradient
 
-> **Branch `develop`.** Everything of `main` plus section 3: the reported energy is rebuilt with
-> the rules of the gradient and the forces get the response of the
-> Mulliken charges that its gradient needs (`GMX_QMMM_RESPONSE`, preset to `off` in the image),
-> so that a boundary charge scheme combined with exclusions of the gradient is a conservative
-> model. This branch also halves the
-> energy of the QM periodic images and cuts the real-space potential at `rcoulomb`, as the forces
-> always did.
-
 A GROMACS 2021.7 build with the DFTB+ QM/MM interface (DFTB+ coupling by Kubař *et al.*),
 PLUMED and a configurable treatment of the QM/MM boundary:
 
@@ -50,12 +42,12 @@ The recipe clones this repository during the build, so the `.def` file is the on
 need locally:
 
 ```bash
-wget https://raw.githubusercontent.com/Vetrov-Anton/gromacs-dftbplus/develop/Install_gmx_dftb_plumed_torch.def
+wget https://raw.githubusercontent.com/Vetrov-Anton/gromacs-dftbplus/main/Install_gmx_dftb_plumed_torch.def
 apptainer build --fakeroot gmx_dftbplus.sif Install_gmx_dftb_plumed_torch.def
 ```
 
 Versions, the branch to build and the number of build jobs are set in one block at the top
-of `%post`; on this branch it is set to `develop`.
+of `%post`; the branch is set to `main`.
 
 The image presets the QM/MM settings below in `%environment`. Each can be overridden per run
 with `--env VAR=value`:
